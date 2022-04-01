@@ -35,7 +35,7 @@ impl BitXor for &CPUState {
 
         // Copy over distinct values for each, and then XOR shared ones
         let self_mem_keys: BTreeSet<_> = self.memory.keys().collect();
-        let rhs_mem_keys: BTreeSet<_> = self.memory.keys().collect();
+        let rhs_mem_keys: BTreeSet<_> = rhs.memory.keys().collect();
         let mut new_memory = BTreeMap::new();
         for self_key in self_mem_keys.difference(&rhs_mem_keys) {
             new_memory.insert(**self_key, *self.memory.get(self_key).unwrap()).ok_or(()).unwrap_err();
@@ -51,7 +51,7 @@ impl BitXor for &CPUState {
         }
 
         let self_csr_keys: HashSet<_> = self.csr.keys().collect();
-        let rhs_csr_keys: HashSet<_> = self.csr.keys().collect();
+        let rhs_csr_keys: HashSet<_> = rhs.csr.keys().collect();
         let mut new_csr = HashMap::new();
         for self_key in self_csr_keys.difference(&rhs_csr_keys) {
             new_csr.insert(**self_key, *self.csr.get(self_key).unwrap()).ok_or(()).unwrap_err();
