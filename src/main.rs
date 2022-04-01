@@ -29,11 +29,11 @@ fn run() -> i32 {
             return 1;
         }
     };
-    let (tx, rx) = crossbeam_channel::unbounded();
+    let (tx_parsed, rx_parsed) = crossbeam_channel::unbounded();
 
     let log_file_reader = BufReader::new(log_file);
     let states = log_file_reader.lines().enumerate()
-            .par_bridge().into_par_iter().try_for_each_with(tx, |tx, (i, line_result)| {
+            .par_bridge().into_par_iter().try_for_each_with(tx_parsed, |tx, (i, line_result)| {
         let line = match line_result {
             Ok(ref s) => s,
             Err(e) => {
@@ -63,7 +63,7 @@ fn run() -> i32 {
     'process_states: loop {
         let mut sent_value = false;
         while !sent_value {
-            let (ctr, mut recv_state, delta) = match rx.recv() {
+            let (ctr, mut recv_state, delta) = match rx_parsed.recv() {
                 Ok(tup) => tup,
                 Err(_) => break 'process_states
             };
@@ -89,6 +89,16 @@ fn run() -> i32 {
         }
         expected_index+=1;
     }
+    // Clear out the rest of the stashed states
+    while let Some((mut recv_state, delta)) = stashed_states.remove(&expected_index) {
+        recv_state.copy_persistent_state(&prev_cpu_state);
+        recv_state.apply(delta);
+        // TODO: stream over states to another thread for power calc
+        prev_cpu_state = recv_state;
+        expected_index+=1;
+    }
+
+    assert_eq!(stashed_states.len(), 0);
     match states {
         Ok(()) => 0,
         Err(e) => e
