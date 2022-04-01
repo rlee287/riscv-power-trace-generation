@@ -2,7 +2,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 mod cpu_structs;
-//use cpu_structs
+use cpu_structs::{CPUState, CPUStateDelta};
+use cpu_structs::parse_commit_line;
 
 fn main() {
     let exit_code = run();
@@ -22,8 +23,31 @@ fn run() -> i32 {
             return 1;
         }
     };
-    for (i, line) in BufReader::new(log_file).lines().enumerate() {
-        
+    let mut prev_cpu_state = CPUState::default();
+    for (i, line_result) in BufReader::new(log_file).lines().enumerate() {
+        let mut new_cpu_state: CPUState;
+        let cpu_delta: CPUStateDelta;
+        let line = match line_result {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error reading file: {}", e);
+                return 1;
+            }
+        };
+        match parse_commit_line(&line) {
+            Ok((state, delta)) => {
+                new_cpu_state = state;
+                cpu_delta = delta;
+            },
+            Err(e) => {
+                eprintln!("Error with line {}: {}", line, e);
+                return 1;
+            }
+        }
+        new_cpu_state.copy_persistent_state(&prev_cpu_state);
+        new_cpu_state.apply(cpu_delta);
+        // TODO: compute power values
+        prev_cpu_state = new_cpu_state;
     }
     return 0;
 }

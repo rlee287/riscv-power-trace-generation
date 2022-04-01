@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, BTreeMap};
+use std::collections::{HashSet, HashMap, BTreeSet, BTreeMap};
 use std::ops::BitXor;
 
 use lazy_static::lazy_static;
@@ -12,8 +12,15 @@ pub struct CPUState {
     pc: u64,
     instr: u32,
     xregs: [u64; 31], // + zero-reg
+    // Address being transmitted on the memory bus
     memaddr: u64,
-    memory: BTreeMap<u64, u8>
+    // Use BTreeMap and its arrays for locality
+    memory: BTreeMap<u64, u8>,
+    /*
+     * CSRs not expected to have similar locality
+     * Make CSRs a sparse array
+     */
+    csr: HashMap<u16, u64>
 }
 impl BitXor for &CPUState {
     type Output = CPUState;
@@ -35,20 +42,40 @@ impl BitXor for &CPUState {
         }
         for shared_key in self_mem_keys.intersection(&rhs_mem_keys) {
             let mem_val = *self.memory.get(shared_key).unwrap() ^ *rhs.memory.get(shared_key).unwrap();
-            new_memory.insert(**shared_key, mem_val).ok_or(()).unwrap_err();
+            if mem_val != 0 {
+                new_memory.insert(**shared_key, mem_val).ok_or(()).unwrap_err();
+            }
         }
+
+        let self_csr_keys: HashSet<_> = self.csr.keys().collect();
+        let rhs_csr_keys: HashSet<_> = self.csr.keys().collect();
+        let mut new_csr = HashMap::new();
+        for self_key in self_csr_keys.difference(&rhs_csr_keys) {
+            new_csr.insert(**self_key, *self.csr.get(self_key).unwrap()).ok_or(()).unwrap_err();
+        }
+        for rhs_key in rhs_csr_keys.difference(&self_csr_keys) {
+            new_csr.insert(**rhs_key, *rhs.csr.get(rhs_key).unwrap()).ok_or(()).unwrap_err();
+        }
+        for shared_key in self_csr_keys.intersection(&rhs_csr_keys) {
+            let mem_val = *self.csr.get(shared_key).unwrap() ^ *rhs.csr.get(shared_key).unwrap();
+            if mem_val != 0 {
+                new_csr.insert(**shared_key, mem_val).ok_or(()).unwrap_err();
+            }
+        }
+
         CPUState {
             privilege_state: self.privilege_state ^ rhs.privilege_state,
             pc: self.pc ^ rhs.pc,
             instr: self.instr ^ rhs.instr,
             xregs: new_xregs,
             memaddr: self.memaddr ^ rhs.memaddr,
-            memory: new_memory
+            memory: new_memory,
+            csr: new_csr
         }
     }
 }
 impl CPUState {
-    pub fn write_store(&mut self, addr: u64, store: StoreVal) {
+    fn write_store(&mut self, addr: u64, store: StoreVal) {
         let mut byte_arr: [u8; 8] = [0x00; 8];
 
         match store {
@@ -66,9 +93,42 @@ impl CPUState {
             }
         }
     }
+    pub fn copy_persistent_state(&mut self, old_state: &CPUState) {
+        self.xregs = old_state.xregs;
+        self.memaddr = old_state.memaddr;
+        self.memory = old_state.memory.clone();
+    }
     pub fn apply(&self, delta: CPUStateDelta) -> CPUState {
         let mut return_val = self.clone();
-        match delta {
+        if let Some((reg, val)) = delta.x_register {
+            return_val.xregs[(reg-1) as usize] = val;
+        }
+        if let Some((reg, val)) = delta.csr_registers[0] {
+            if val==0 {
+                return_val.csr.remove(&reg);
+            } else {
+                return_val.csr.insert(reg, val);
+            }
+        }
+        if let Some((reg, val)) = delta.csr_registers[1] {
+            if val==0 {
+                return_val.csr.remove(&reg);
+            } else {
+                return_val.csr.insert(reg, val);
+            }
+        }
+        match delta.memory_op {
+            Some(MemoryOperation::MemoryLoad { addr }) => {
+                return_val.memaddr = addr;
+            }
+            Some(MemoryOperation::MemoryStore { addr, value }) => {
+                return_val.memaddr = addr;
+                return_val.write_store(addr, value);
+            },
+            None => {}
+        }
+        /*match delta {
+            CPUStateDelta::None => {}
             CPUStateDelta::RegisterOnly { register: reg, value: val } => {
                 return_val.xregs[(reg-1) as usize] = val;
             },
@@ -80,25 +140,9 @@ impl CPUState {
                 return_val.memaddr = addr;
                 return_val.write_store(addr, store_val);
             }
-        };
+        };*/
         return_val
     }
-}
-
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
-pub struct PowerSettings {
-    pub hamming_weight_multiplier: f64,
-    pub hamming_delta_multiplier: f64
-}
-#[derive(Default, Debug, Clone, Copy)]
-pub struct CPUPowerSettings {
-    pub clock_frequency: f64,
-    pub priv_weighting: PowerSettings,
-    pub pc_weighting: PowerSettings,
-    pub instr_weighting: PowerSettings,
-    pub xregs_weighting: PowerSettings,
-    pub memaddr_weighting: PowerSettings,
-    pub memory_weighting: PowerSettings
 }
 
 /* Example lines
@@ -108,6 +152,14 @@ core   0: 0 0x000000000001034c (0x00064917) x18 0x000000000007434c
 core   0: 0 0x0000000000010350 (0x4bc93903) x18 0x0000000000072b10 mem 0x0000000000074808
 core   0: 0 0x0000000000010354 (0x00093783) x15 0x69625f7365610000 mem 0x0000000000072b10
 core   0: 0 0x0000000000010358 (0xef06) mem 0x0000003ffffffa08 0x0000000000014288
+ */
+/* Line format:
+ * `core <number>: <priv> 0x<pc> (0x<instr>) <commit>* <mem>`
+ * Where <commit> is one of
+ * ` x ?<xreg_num> <value>`
+ * ` c<num>_<csr_name> <addr> <value>?
+ * And <mem> is
+ * ` mem <addr> <value>?`
  */
 lazy_static! {
     /* Capturing groups:
@@ -119,8 +171,8 @@ lazy_static! {
      */
     static ref TRACE_REGEX: Regex = Regex::new(concat!("^",
         "core *[[:digit:]]+: ",
-        "([[:digit:]]+) ",
-        "0x([[:xdigit:]]{16})",
+        "([[:digit:]]) ",
+        "0x([[:xdigit:]]{16}) ",
         r"\(0x([[:xdigit:]]{4,8})\)",
         "( .+)?",
         "$")
@@ -132,15 +184,39 @@ lazy_static! {
      * 3: Memory address, if present
      * 4: Value stored into memory, if present
      */
-    static ref VALUE_CHANGE_REGEX: Regex = Regex::new(concat!("^",
+    /*static ref VALUE_CHANGE_REGEX: Regex = Regex::new(concat!("^",
         "(?: x ?(?:([[:digit:]]+) 0x([[:xdigit:]]{16})))?",
         "(?: mem 0x([[:xdigit:]]{16})(?: 0x([[:xdigit:]]+))?)?",
         "$")
+    ).unwrap();*/
+    /* Capturing groups:
+     * 0: The entire thing
+     * 1: Register number
+     * 2: Register value
+     */
+    static ref XREG_CHANGE: Regex = Regex::new(
+        " x ?([[:digit:]]+) 0x([[:xdigit:]]{16})"
+    ).unwrap();
+    /* Capturing groups:
+     * 0: The entire thing
+     * 1: CSR register number (we discard the name)
+     * 2: CSR register value
+     */
+    static ref CSR_CHANGE: Regex = Regex::new(
+        " c([[:digit:]]+)_[^ ]+ 0x([[:xdigit:]]{16})"
+    ).unwrap();
+    /* Capturing groups:
+     * 0: The entire thing
+     * 1: Memory address
+     * 2: Memory value, if present
+     */
+    static ref MEM_CHANGE: Regex = Regex::new(
+        " mem 0x([[:xdigit:]]{16})(?: 0x((?:[[:xdigit:]][[:xdigit:]])+))?"
     ).unwrap();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoreVal {
+enum StoreVal {
     U8(u8),
     U16(u16),
     U32(u32),
@@ -156,90 +232,144 @@ impl StoreVal {
         }
     }
 }
+impl FromStr for StoreVal {
+    type Err = CPUStateStrParseErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // We expect from_str_radix to always suceed due to expected input
+        // Failure has the same semantic cause as regex failure, so report that
+        match s.len() {
+            2 => {
+                match u8::from_str_radix(s, 16) {
+                    Ok(val) => Ok(StoreVal::U8(val)),
+                    Err(_) => Err(CPUStateStrParseErr::RegexFail)
+                }
+            },
+            4 => {
+                match u16::from_str_radix(s, 16) {
+                    Ok(val) => Ok(StoreVal::U16(val)),
+                    Err(_) => Err(CPUStateStrParseErr::RegexFail)
+                }
+            },
+            8 => {
+                match u32::from_str_radix(s, 16) {
+                    Ok(val) => Ok(StoreVal::U32(val)),
+                    Err(_) => Err(CPUStateStrParseErr::RegexFail)
+                }
+            },
+            16 => {
+                match u64::from_str_radix(s, 16) {
+                    Ok(val) => Ok(StoreVal::U64(val)),
+                    Err(_) => Err(CPUStateStrParseErr::RegexFail)
+                }
+            },
+            _ => Err(CPUStateStrParseErr::InvalidStoreWidth(s.len()))
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CPUStateDelta {
-    RegisterOnly {register: u8, value: u64},
+enum MemoryOperation {
     // Loads are always zero-extended or sign-extended
-    MemoryLoad {addr: u64, register: u8, value: u64},
+    MemoryLoad {addr: u64},
+    // Stores have a size to account for
     MemoryStore {addr: u64, value: StoreVal}
 }
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CPUStateDelta {
+    x_register: Option<(u8, u64)>,
+    csr_registers: [Option<(u16, u64)>; 2],
+    memory_op: Option<MemoryOperation>
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CPUStateDeltaFromStrErr {
+pub enum CPUStateStrParseErr {
+    InvalidPrivilege(u8),
     InvalidRegister(u8),
     InvalidStoreWidth(usize),
-    RegexFail(String)
+    RegexFail
 }
-impl fmt::Display for CPUStateDeltaFromStrErr {
+impl fmt::Display for CPUStateStrParseErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPrivilege(r#priv) => write!(f, "Invalid privilege {} ", r#priv),
             Self::InvalidRegister(reg) => write!(f, "Invalid register {}", reg),
-            Self::InvalidStoreWidth(w) => write!(f, "Invalid store width {}", w),
-            Self::RegexFail(s) => write!(f, "Parsing failed for {}", s)
+            Self::InvalidStoreWidth(width) => write!(f, "Invalid store width {}", width),
+            Self::RegexFail => f.write_str("Regex did not match")
         }
     }
 }
 impl FromStr for CPUStateDelta {
-    type Err = CPUStateDeltaFromStrErr;
+    type Err = CPUStateStrParseErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let captures_option = VALUE_CHANGE_REGEX.captures(s);
-        match captures_option {
-            Some(captures) => {
-                let reg = captures.get(1)
-                    .map(|s| u8::from_str_radix(s.as_str(), 16).unwrap());
-                let reg_value = match reg {
-                    Some(_) => Some(u64::from_str_radix(captures.get(2).unwrap().as_str(), 16).unwrap()),
-                    None => None
-                };
-                let mem_address = captures.get(3)
-                    .map(|s| u64::from_str_radix(s.as_str(), 16).unwrap());
-                let mem_value = match mem_address {
-                    Some(_) => captures.get(4),
-                    None => None
-                };
-                match (reg, reg_value, mem_address, mem_value) {
-                    (Some(reg), Some(reg_val), None, None) => {
-                        // Register only change
-                        if !(1..=32).contains(&reg) {
-                            Err(CPUStateDeltaFromStrErr::InvalidRegister(reg))
-                        } else {
-                            Ok(CPUStateDelta::RegisterOnly {
-                                register: reg,
-                                value: reg_val
-                            })
-                        }
-                    },
-                    (Some(reg), Some(reg_val), Some(mem_addr), None) => {
-                        // Value load into register
-                        if !(1..=32).contains(&reg) {
-                            Err(CPUStateDeltaFromStrErr::InvalidRegister(reg))
-                        } else {
-                            Ok(CPUStateDelta::MemoryLoad {
-                                addr: mem_addr,
-                                register: reg,
-                                value: reg_val
-                            })
-                        }
-                    },
-                    (None, None, Some(mem_addr), Some(mem_val)) => {
-                        let val_str = mem_val.as_str();
-                        // Length is in hexadecimal digits
-                        let val = match val_str.len() {
-                            2 => StoreVal::U8(u8::from_str_radix(val_str, 16).unwrap()),
-                            4 => StoreVal::U16(u16::from_str_radix(val_str, 16).unwrap()),
-                            8 => StoreVal::U32(u32::from_str_radix(val_str, 16).unwrap()),
-                            16 => StoreVal::U64(u64::from_str_radix(val_str, 16).unwrap()),
-                            val => return Err(CPUStateDeltaFromStrErr::InvalidStoreWidth(val))
-                        };
-                        Ok(CPUStateDelta::MemoryStore {
-                            addr: mem_addr,
-                            value: val
-                        })
-                    },
-                    _ => Err(CPUStateDeltaFromStrErr::RegexFail(s.to_string()))
-                }
-            },
-            None => Err(CPUStateDeltaFromStrErr::RegexFail(s.to_string()))
+        let mut ret_delta = CPUStateDelta::default();
+        let xreg_captures_opt = XREG_CHANGE.captures(s);
+        let csr_captures = CSR_CHANGE.captures_iter(s);
+        let mem_captures_opt = MEM_CHANGE.captures(s);
+        /*
+         * At most one match will occur for most regex:
+         * - Register transfers only write to one
+         * - Up to two CSR registers are written to
+         * - RISC-V is a load-store architecture so at most one memory operation occurs per instruction
+         */
+        if let Some(xreg_captures) = xreg_captures_opt {
+            let reg = u8::from_str(&xreg_captures[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            if !(1..32).contains(&reg) {
+                return Err(CPUStateStrParseErr::InvalidRegister(reg));
+            }
+            let reg_val = u64::from_str_radix(&xreg_captures[2], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            ret_delta.x_register = Some((reg, reg_val));
         }
+        for (i, csr_capture) in csr_captures.enumerate() {
+            if i>=2 {
+                // TODO: better error, if this actually gets hit
+                return Err(CPUStateStrParseErr::RegexFail);
+            }
+            let csr_addr = u16::from_str(&csr_capture[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            let csr_val = u64::from_str_radix(&csr_capture[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            ret_delta.csr_registers[i] = Some((csr_addr, csr_val));
+        }
+        if let Some(mem_captures) = mem_captures_opt {
+            let mem_addr = u64::from_str_radix(&mem_captures[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            match mem_captures.get(2) {
+                Some(val_match) => {
+                    ret_delta.memory_op = Some(MemoryOperation::MemoryStore {
+                        addr: mem_addr,
+                        value: StoreVal::from_str(val_match.as_str())?
+                    });
+                },
+                None => {
+                    ret_delta.memory_op = Some(MemoryOperation::MemoryLoad {
+                        addr: mem_addr
+                    });
+                }
+            }
+        }
+        Ok(ret_delta)
     }
+}
+
+pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUStateStrParseErr> {
+    let line_capture = TRACE_REGEX.captures(line).ok_or(CPUStateStrParseErr::RegexFail)?;
+    let priv_level = u8::from_str(&line_capture[1]).unwrap();
+    if ![0,1,3].contains(&priv_level) {
+        return Err(CPUStateStrParseErr::InvalidPrivilege(priv_level));
+    }
+    let pc = u64::from_str_radix(&line_capture[2], 16).unwrap();
+    // Approximation: we'd expect a real CPU to decode compressed instructions
+    let instr = u32::from_str_radix(&line_capture[3], 16).unwrap();
+
+    let cpu_state = CPUState {
+        privilege_state: priv_level, 
+        instr,
+        pc,
+        xregs: [0; 31],
+        memaddr: 0,
+        memory: BTreeMap::new(),
+        csr: HashMap::new()
+    };
+    let delta = match line_capture.get(4) {
+        Some(m) => CPUStateDelta::from_str(m.as_str())?,
+        None => CPUStateDelta::default()
+    };
+    Ok((cpu_state, delta))
 }
