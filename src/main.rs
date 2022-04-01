@@ -13,9 +13,8 @@ use power_config::CPUPowerSettings;
 //use rayon::prelude::*;
 use crossbeam_utils::thread::scope;
 //use std::thread::spawn;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{Ordering, AtomicI32};
-use atomic_refcell::AtomicRefCell;
 
 fn main() {
     let exit_code = run();
@@ -66,12 +65,12 @@ fn run() -> i32 {
     let (tx_pc, rx_pc) = crossbeam_channel::bounded(1024);
     let (tx_state, rx_state) = crossbeam_channel::bounded(1024*4);
 
-    let mut location_labels = Vec::new();
+    let location_labels = Arc::new(Mutex::new(Vec::new()));
 
-    let mut power_values = Vec::new();
+    let power_values = Arc::new(Mutex::new(Vec::new()));
 
-    let computation_block_result = scope(|s| {
-        let exit_code = Arc::new(AtomicI32::new(0));
+    let exit_code = Arc::new(AtomicI32::new(0));
+    scope(|s| {
         let exit_code_ref = exit_code.clone();
         // CPU state thread
         let cpu_state_thread = s.spawn(move |_| {
@@ -91,10 +90,12 @@ fn run() -> i32 {
             }
         });
         let exit_code_ref = exit_code.clone();
+        let location_label_lock = location_labels.clone();
         // Location classifier thread
         let location_classifier_thread = s.spawn(move |_| {
+            let mut location_labels = location_label_lock.lock().unwrap();
             for pc in rx_pc.clone() {
-                println!("PC queue len {}", rx_pc.len());
+                //println!("PC queue len {}", rx_pc.len());
                 if exit_code_ref.load(Ordering::Acquire) != 0 {
                     break;
                 }
@@ -102,11 +103,13 @@ fn run() -> i32 {
             }
         });
         let exit_code_ref = exit_code.clone();
+        let power_value_lock = power_values.clone();
         // Power computation thread
         let power_computation_thread = s.spawn(move |_| {
+            let mut power_values = power_value_lock.lock().unwrap();
             let mut prev_state = Arc::new(CPUState::default());
             for state in rx_state.clone() {
-                println!("Power queue len {}", rx_state.len());
+                //println!("Power queue len {}", rx_state.len());
                 if exit_code_ref.load(Ordering::Acquire) != 0 {
                     break;
                 }
@@ -130,7 +133,7 @@ fn run() -> i32 {
             match parse_commit_line(&line) {
                 Ok((state, delta)) => {
                     tx_parsed.send((state, delta)).unwrap();
-                    println!("Parse queue len {}", tx_parsed.len());
+                    //println!("Parse queue len {}", tx_parsed.len());
                 },
                 Err(e) => {
                     eprintln!("Error with line {}: {}", line, e);
@@ -139,14 +142,15 @@ fn run() -> i32 {
                 }
             }
             line_ctr+=1;
-            println!("Line {}", line_ctr);
+            eprintln!("Line {}", line_ctr);
         }
-        cpu_state_thread.join();
-        location_classifier_thread.join();
-        power_computation_thread.join();
-        return exit_code.load(Ordering::Acquire);
+        drop(tx_parsed);
     }).unwrap();
-    computation_block_result
+    let out_vec = Arc::try_unwrap(power_values).unwrap().into_inner().unwrap();
+    for val in out_vec {
+        println!("{}", val);
+    }
+    exit_code.load(Ordering::Acquire)
     //let power_computation_thread = 
     //let exit_status: Result<(), i32> = 
     /*rayon::scope_fifo(move |s| {

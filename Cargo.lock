@@ -22,12 +22,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "atomic_refcell"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73b5e5f48b927f04e952dedc932f31995a65a0bf65ec971c74436e51bf6e970d"
-
-[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -85,7 +79,6 @@ name = "power_trace_generation"
 version = "0.1.0"
 dependencies = [
  "addr2line",
- "atomic_refcell",
  "crossbeam-channel",
  "crossbeam-utils",
  "lazy_static",

@@ -1,4 +1,6 @@
-use std::collections::{HashSet, HashMap, BTreeSet, BTreeMap};
+use std::collections::{HashSet, HashMap};
+#[cfg(feature = "mem_track")]
+use std::collections::{BTreeSet, BTreeMap};
 use std::ops::BitXor;
 
 use lazy_static::lazy_static;
@@ -18,6 +20,7 @@ pub struct CPUState {
     // Address being transmitted on the memory bus
     memaddr: u64,
     // Use BTreeMap and its arrays for locality
+    #[cfg(feature = "mem_track")]
     memory: BTreeMap<u64, u8>,
     /*
      * CSRs not expected to have similar locality
@@ -33,20 +36,23 @@ impl BitXor for &CPUState {
             new_xregs[i] ^= rhs.xregs[i];
         }
 
-        // Copy over distinct values for each, and then XOR shared ones
-        let self_mem_keys: BTreeSet<_> = self.memory.keys().collect();
-        let rhs_mem_keys: BTreeSet<_> = rhs.memory.keys().collect();
-        let mut new_memory = BTreeMap::new();
-        for self_key in self_mem_keys.difference(&rhs_mem_keys) {
-            new_memory.insert(**self_key, *self.memory.get(self_key).unwrap()).ok_or(()).unwrap_err();
-        }
-        for rhs_key in rhs_mem_keys.difference(&self_mem_keys) {
-            new_memory.insert(**rhs_key, *rhs.memory.get(rhs_key).unwrap()).ok_or(()).unwrap_err();
-        }
-        for shared_key in self_mem_keys.intersection(&rhs_mem_keys) {
-            let mem_val = *self.memory.get(shared_key).unwrap() ^ *rhs.memory.get(shared_key).unwrap();
-            if mem_val != 0 {
-                new_memory.insert(**shared_key, mem_val).ok_or(()).unwrap_err();
+        #[cfg(feature = "mem_track")]
+        {
+            // Copy over distinct values for each, and then XOR shared ones
+            let self_mem_keys: BTreeSet<_> = self.memory.keys().collect();
+            let rhs_mem_keys: BTreeSet<_> = rhs.memory.keys().collect();
+            let mut new_memory = BTreeMap::new();
+            for self_key in self_mem_keys.difference(&rhs_mem_keys) {
+                new_memory.insert(**self_key, *self.memory.get(self_key).unwrap()).ok_or(()).unwrap_err();
+            }
+            for rhs_key in rhs_mem_keys.difference(&self_mem_keys) {
+                new_memory.insert(**rhs_key, *rhs.memory.get(rhs_key).unwrap()).ok_or(()).unwrap_err();
+            }
+            for shared_key in self_mem_keys.intersection(&rhs_mem_keys) {
+                let mem_val = *self.memory.get(shared_key).unwrap() ^ *rhs.memory.get(shared_key).unwrap();
+                if mem_val != 0 {
+                    new_memory.insert(**shared_key, mem_val).ok_or(()).unwrap_err();
+                }
             }
         }
 
@@ -72,6 +78,7 @@ impl BitXor for &CPUState {
             instr: self.instr ^ rhs.instr,
             xregs: new_xregs,
             memaddr: self.memaddr ^ rhs.memaddr,
+            #[cfg(feature = "mem_track")]
             memory: new_memory,
             csr: new_csr
         }
@@ -82,6 +89,7 @@ impl CPUState {
     pub fn pc(&self) -> u64 {
         self.pc
     }
+    #[cfg(feature = "mem_track")]
     fn write_store(&mut self, addr: u64, store: StoreVal) {
         let mut byte_arr: [u8; 8] = [0x00; 8];
 
@@ -103,7 +111,10 @@ impl CPUState {
     pub fn copy_persistent_state(&mut self, old_state: &CPUState) {
         self.xregs = old_state.xregs;
         self.memaddr = old_state.memaddr;
-        self.memory = old_state.memory.clone();
+        #[cfg(feature = "mem_track")]
+        {
+            self.memory = old_state.memory.clone();
+        }
     }
     pub fn apply(&mut self, delta: CPUStateDelta) {
         if let Some((reg, val)) = delta.x_register {
@@ -127,9 +138,14 @@ impl CPUState {
             Some(MemoryOperation::MemoryLoad { addr }) => {
                 self.memaddr = addr;
             }
+            #[cfg(feature = "mem_track")]
             Some(MemoryOperation::MemoryStore { addr, value }) => {
                 self.memaddr = addr;
                 self.write_store(addr, value);
+            },
+            #[cfg(not(feature = "mem_track"))]
+            Some(MemoryOperation::MemoryStore { addr }) => {
+                self.memaddr = addr;
             },
             None => {}
         }
@@ -146,9 +162,12 @@ impl CPUState {
         });
         let memaddr_power = power.memaddr.weight_multiplier *
             f64::from(self.memaddr.count_ones());
+        #[cfg(feature = "mem_track")]
         let memory_power = self.memory.values().map(|byte| {
             power.memory.weight_multiplier * f64::from(byte.count_ones())
         });
+        #[cfg(not(feature = "mem_track"))]
+        let memory_power = [0.0];
         let csr_power = self.csr.values().map(|csr_reg| {
             power.csr.weight_multiplier * f64::from(csr_reg.count_ones())
         });
@@ -173,9 +192,12 @@ impl CPUState {
                 });
                 let memaddr_power = power.memaddr.delta_multiplier *
                     f64::from(delta_state.memaddr.count_ones());
+                #[cfg(feature = "mem_track")]
                 let memory_power = delta_state.memory.values().map(|byte| {
                     power.memory.delta_multiplier * f64::from(byte.count_ones())
                 });
+                #[cfg(not(feature = "mem_track"))]
+                let memory_power = [0.0];
                 let csr_power = delta_state.csr.values().map(|csr_reg| {
                     power.csr.delta_multiplier * f64::from(csr_reg.count_ones())
                 });
@@ -261,6 +283,7 @@ lazy_static! {
     ).unwrap();
 }
 
+#[cfg(feature = "mem_track")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StoreVal {
     U8(u8),
@@ -268,6 +291,7 @@ enum StoreVal {
     U32(u32),
     U64(u64)
 }
+#[cfg(feature = "mem_track")]
 impl StoreVal {
     pub fn byte_len(&self) -> usize {
         match self {
@@ -278,6 +302,7 @@ impl StoreVal {
         }
     }
 }
+#[cfg(feature = "mem_track")]
 impl FromStr for StoreVal {
     type Err = CPUStateStrParseErr;
 
@@ -313,12 +338,17 @@ impl FromStr for StoreVal {
         }
     }
 }
+// Keep even without mem_track for tracking the bus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryOperation {
     // Loads are always zero-extended or sign-extended
     MemoryLoad {addr: u64},
     // Stores have a size to account for
-    MemoryStore {addr: u64, value: StoreVal}
+    MemoryStore {
+        addr: u64,
+        #[cfg(feature = "mem_track")]
+        value: StoreVal
+    }
 }
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CPUStateDelta {
@@ -380,6 +410,7 @@ impl FromStr for CPUStateDelta {
                 Some(val_match) => {
                     ret_delta.memory_op = Some(MemoryOperation::MemoryStore {
                         addr: mem_addr,
+                        #[cfg(feature = "mem_track")]
                         value: StoreVal::from_str(val_match.as_str())?
                     });
                 },
@@ -412,6 +443,7 @@ pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUSta
         pc,
         xregs: [0; 31],
         memaddr: 0,
+        #[cfg(feature = "mem_track")]
         memory: BTreeMap::new(),
         csr: HashMap::new()
     };
