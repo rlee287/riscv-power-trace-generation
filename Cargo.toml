@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 lazy_static = "1.4"
+genawaiter = {version = "0.99", default-features = false}
+rayon = "1.5"
+crossbeam-channel = "0.5"
 
 [dependencies.regex]
 version = "1.5"
