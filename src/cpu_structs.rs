@@ -105,36 +105,34 @@ impl CPUState {
         self.memaddr = old_state.memaddr;
         self.memory = old_state.memory.clone();
     }
-    pub fn apply(&self, delta: CPUStateDelta) -> CPUState {
-        let mut return_val = self.clone();
+    pub fn apply(&mut self, delta: CPUStateDelta) {
         if let Some((reg, val)) = delta.x_register {
-            return_val.xregs[(reg-1) as usize] = val;
+            self.xregs[(reg-1) as usize] = val;
         }
         if let Some((reg, val)) = delta.csr_registers[0] {
             if val==0 {
-                return_val.csr.remove(&reg);
+                self.csr.remove(&reg);
             } else {
-                return_val.csr.insert(reg, val);
+                self.csr.insert(reg, val);
             }
         }
         if let Some((reg, val)) = delta.csr_registers[1] {
             if val==0 {
-                return_val.csr.remove(&reg);
+                self.csr.remove(&reg);
             } else {
-                return_val.csr.insert(reg, val);
+                self.csr.insert(reg, val);
             }
         }
         match delta.memory_op {
             Some(MemoryOperation::MemoryLoad { addr }) => {
-                return_val.memaddr = addr;
+                self.memaddr = addr;
             }
             Some(MemoryOperation::MemoryStore { addr, value }) => {
-                return_val.memaddr = addr;
-                return_val.write_store(addr, value);
+                self.memaddr = addr;
+                self.write_store(addr, value);
             },
             None => {}
         }
-        return_val
     }
     pub fn compute_power(&self, other: Option<&Self>, power: &CPUPowerSettings) -> f64 {
         let priv_power = power.r#priv.weight_multiplier *
