@@ -6,6 +6,9 @@ use regex::Regex;
 use std::str::FromStr;
 use std::fmt;
 
+use crate::power_config::CPUPowerSettings;
+use crate::arithmetic_utils;
+
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct CPUState {
     privilege_state: u8,
@@ -79,10 +82,6 @@ impl CPUState {
     pub fn pc(&self) -> u64 {
         self.pc
     }
-    #[inline(always)]
-    pub fn xregs(&self) -> &[u64; 31] {
-        &self.xregs
-    }
     fn write_store(&mut self, addr: u64, store: StoreVal) {
         let mut byte_arr: [u8; 8] = [0x00; 8];
 
@@ -136,6 +135,61 @@ impl CPUState {
             None => {}
         }
         return_val
+    }
+    pub fn compute_power(&self, other: Option<&Self>, power: &CPUPowerSettings) -> f64 {
+        let priv_power = power.r#priv.weight_multiplier *
+            f64::from(self.privilege_state.count_ones());
+        let pc_power = power.pc.weight_multiplier *
+            f64::from(self.pc.count_ones());
+        let instr_power = power.instr.weight_multiplier *
+            f64::from(self.instr.count_ones());
+        let xregs_power = self.xregs.map(|regval| {
+            power.xregs.weight_multiplier * f64::from(regval.count_ones())
+        });
+        let memaddr_power = power.memaddr.weight_multiplier *
+            f64::from(self.memaddr.count_ones());
+        let memory_power = self.memory.values().map(|byte| {
+            power.memory.weight_multiplier * f64::from(byte.count_ones())
+        });
+        let csr_power = self.csr.values().map(|csr_reg| {
+            power.csr.weight_multiplier * f64::from(csr_reg.count_ones())
+        });
+        let weight_iter = [priv_power].into_iter()
+            .chain([pc_power, instr_power, memaddr_power])
+            .chain(xregs_power)
+            .chain(memory_power)
+            .chain(csr_power);
+
+        match other {
+            Some(other_state) => {
+                let delta_state = self ^ other_state;
+
+                let priv_power = power.r#priv.delta_multiplier *
+                    f64::from(delta_state.privilege_state.count_ones());
+                let pc_power = power.pc.delta_multiplier *
+                    f64::from(delta_state.pc.count_ones());
+                let instr_power = power.instr.delta_multiplier *
+                    f64::from(delta_state.instr.count_ones());
+                let xregs_power = delta_state.xregs.map(|regval| {
+                    power.xregs.delta_multiplier * f64::from(regval.count_ones())
+                });
+                let memaddr_power = power.memaddr.delta_multiplier *
+                    f64::from(delta_state.memaddr.count_ones());
+                let memory_power = delta_state.memory.values().map(|byte| {
+                    power.memory.delta_multiplier * f64::from(byte.count_ones())
+                });
+                let csr_power = delta_state.csr.values().map(|csr_reg| {
+                    power.csr.delta_multiplier * f64::from(csr_reg.count_ones())
+                });
+                let delta_iter = [priv_power].into_iter()
+                    .chain([pc_power, instr_power, memaddr_power])
+                    .chain(xregs_power)
+                    .chain(memory_power)
+                    .chain(csr_power);
+                arithmetic_utils::sum(weight_iter.chain(delta_iter))
+            },
+            None => arithmetic_utils::sum(weight_iter)
+        }
     }
 }
 

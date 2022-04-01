@@ -1,10 +1,14 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{Read, BufRead, BufReader};
 
 mod cpu_structs;
+mod power_config;
+mod arithmetic_utils;
 
 use cpu_structs::CPUState;
 use cpu_structs::parse_commit_line;
+
+use power_config::CPUPowerSettings;
 
 use std::collections::HashMap;
 
@@ -17,8 +21,8 @@ fn main() {
 }
 fn run() -> i32 {
     let input_args: Vec<_> = std::env::args().collect();
-    if input_args.len() != 2 {
-        eprintln!("Usage: {} log_file", input_args[0]);
+    if input_args.len() != 3 {
+        eprintln!("Usage: {} log_file config_file", input_args[0]);
         return 2;
     }
     let log_file_name = input_args[1].as_str();
@@ -29,6 +33,32 @@ fn run() -> i32 {
             return 1;
         }
     };
+    let config_file_name = input_args[2].as_str();
+    let mut config_file = match File::open(config_file_name) {
+        Ok(fil) => fil,
+        Err(e) => {
+            eprintln!("Error opening config {}: {}", config_file_name, e);
+            return 1;
+        }
+    };
+    let mut config_file_contents = Vec::new();
+    match config_file.read_to_end(&mut config_file_contents) {
+        Ok(_) => {},
+        Err(e) => {
+            eprintln!("Error reading config file: {}", e);
+            return 1;
+        }
+    }
+    let power_config: CPUPowerSettings = match toml::from_slice(&config_file_contents) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Error parsing config file: {}", e);
+            return 1;
+        }
+    };
+    drop(config_file_contents);
+    drop(config_file);
+
     let (tx_parsed, rx_parsed) = crossbeam_channel::unbounded();
 
     let log_file_reader = BufReader::new(log_file);
@@ -122,11 +152,13 @@ fn run() -> i32 {
         });
         s.spawn(move |_| {
             let mut power_vec = power_values_ref.borrow_mut();
+            let mut prev_state = CPUState::default();
             for state in rx_state {
-                let hamming_weight: u32 = state.xregs().iter()
-                    .map(|v| v.count_ones()).sum();
-                power_vec.push(hamming_weight);
+                let power = state.compute_power(Some(&prev_state), &power_config);
+                power_vec.push(power);
+                prev_state = state;
             }
+            println!("{:#?}", prev_state);
         });
     });
     println!("{:x}", location_labels.borrow().last().unwrap());

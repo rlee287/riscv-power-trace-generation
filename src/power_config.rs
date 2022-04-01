@@ -1,16 +1,20 @@
+use serde::Deserialize;
 
+#[derive(Deserialize)]
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct PowerSettings {
-    pub hamming_weight_multiplier: f64,
-    pub hamming_delta_multiplier: f64
+    pub weight_multiplier: f64,
+    pub delta_multiplier: f64
 }
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct CPUPowerSettings {
     pub clock_frequency: f64,
-    pub priv_weighting: PowerSettings,
-    pub pc_weighting: PowerSettings,
-    pub instr_weighting: PowerSettings,
-    pub xregs_weighting: PowerSettings,
-    pub memaddr_weighting: PowerSettings,
-    pub memory_weighting: PowerSettings
+    pub r#priv: PowerSettings,
+    pub pc: PowerSettings,
+    pub instr: PowerSettings,
+    pub xregs: PowerSettings,
+    pub memaddr: PowerSettings,
+    pub memory: PowerSettings,
+    pub csr: PowerSettings
 }
