@@ -75,6 +75,14 @@ impl BitXor for &CPUState {
     }
 }
 impl CPUState {
+    #[inline(always)]
+    pub fn pc(&self) -> u64 {
+        self.pc
+    }
+    #[inline(always)]
+    pub fn xregs(&self) -> &[u64; 31] {
+        &self.xregs
+    }
     fn write_store(&mut self, addr: u64, store: StoreVal) {
         let mut byte_arr: [u8; 8] = [0x00; 8];
 
@@ -127,20 +135,6 @@ impl CPUState {
             },
             None => {}
         }
-        /*match delta {
-            CPUStateDelta::None => {}
-            CPUStateDelta::RegisterOnly { register: reg, value: val } => {
-                return_val.xregs[(reg-1) as usize] = val;
-            },
-            CPUStateDelta::MemoryLoad { addr, register: reg, value: val } => {
-                return_val.memaddr = addr;
-                return_val.xregs[(reg-1) as usize] = val;
-            },
-            CPUStateDelta::MemoryStore { addr, value: store_val } => {
-                return_val.memaddr = addr;
-                return_val.write_store(addr, store_val);
-            }
-        };*/
         return_val
     }
 }
