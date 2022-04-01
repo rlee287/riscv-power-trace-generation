@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 lazy_static = "1.4"
-rayon = "1.5"
+crossbeam-utils = "0.8"
 crossbeam-channel = "0.5"
 atomic_refcell = "0.1"
 toml = "0.5"

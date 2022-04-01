@@ -389,6 +389,8 @@ impl FromStr for CPUStateDelta {
                     });
                 }
             }
+            //println!("{}", s);
+            //println!("{:?}", ret_delta.memory_op);
         }
         Ok(ret_delta)
     }
@@ -418,4 +420,15 @@ pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUSta
         None => CPUStateDelta::default()
     };
     Ok((cpu_state, delta))
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn mem_regex() {
+        let input_str = " mem 0x0000003ffffffa08 0x0000000000014288";
+        assert!(MEM_CHANGE.find(input_str).is_some())
+    }
 }

@@ -1,5 +1,6 @@
 /// Implements a Kahan summation algorithm over the iterator.
 pub fn sum(arr: impl IntoIterator<Item = f64>) -> f64 {
+    // See https://en.wikipedia.org/wiki/Kahan_summation_algorithm
     let mut sum = 0.0;
     let mut c = 0.0;
     for x in arr {

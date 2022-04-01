@@ -5,14 +5,16 @@ mod cpu_structs;
 mod power_config;
 mod arithmetic_utils;
 
-use cpu_structs::CPUState;
+use cpu_structs::{CPUState, CPUStateDelta};
 use cpu_structs::parse_commit_line;
 
 use power_config::CPUPowerSettings;
 
-use std::collections::HashMap;
-
-use rayon::prelude::*;
+//use rayon::prelude::*;
+use crossbeam_utils::thread::scope;
+//use std::thread::spawn;
+use std::sync::Arc;
+use std::sync::atomic::{Ordering, AtomicI32};
 use atomic_refcell::AtomicRefCell;
 
 fn main() {
@@ -59,41 +61,97 @@ fn run() -> i32 {
     drop(config_file_contents);
     drop(config_file);
 
-    let (tx_parsed, rx_parsed) = crossbeam_channel::unbounded();
+    let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(CPUState, CPUStateDelta)>(1024*64);
 
-    let log_file_reader = BufReader::new(log_file);
-    let states = log_file_reader.lines().enumerate()
-            .par_bridge().into_par_iter().try_for_each_with(tx_parsed, |tx, (i, line_result)| {
-        let line = match line_result {
-            Ok(ref s) => s,
-            Err(e) => {
-                eprintln!("Error reading file: {}", e);
-                return Err(1);
+    let (tx_pc, rx_pc) = crossbeam_channel::bounded(1024);
+    let (tx_state, rx_state) = crossbeam_channel::bounded(1024*4);
+
+    let mut location_labels = Vec::new();
+
+    let mut power_values = Vec::new();
+
+    let computation_block_result = scope(|s| {
+        let exit_code = Arc::new(AtomicI32::new(0));
+        let exit_code_ref = exit_code.clone();
+        // CPU state thread
+        let cpu_state_thread = s.spawn(move |_| {
+            let mut prev_cpu_state = Arc::new(CPUState::default());
+    
+            for (mut recv_state, delta) in rx_parsed {
+                if exit_code_ref.load(Ordering::Acquire) != 0 {
+                    break;
+                }
+                recv_state.copy_persistent_state(&prev_cpu_state);
+                recv_state.apply(delta);
+                let recv_state_arc = Arc::new(recv_state);
+                tx_pc.send(recv_state_arc.pc()).unwrap();
+                // Stream over states to another thread for power calc
+                tx_state.send(recv_state_arc.clone()).unwrap();
+                prev_cpu_state = recv_state_arc;
             }
-        };
-        match parse_commit_line(&line) {
-            Ok((state, delta)) => {
-                tx.send((i, state, delta)).unwrap();
-                return Ok(());
-            },
-            Err(e) => {
-                eprintln!("Error with line {}: {}", line, e);
-                return Err(1);
+        });
+        let exit_code_ref = exit_code.clone();
+        // Location classifier thread
+        let location_classifier_thread = s.spawn(move |_| {
+            for pc in rx_pc.clone() {
+                println!("PC queue len {}", rx_pc.len());
+                if exit_code_ref.load(Ordering::Acquire) != 0 {
+                    break;
+                }
+                location_labels.push(pc);
             }
+        });
+        let exit_code_ref = exit_code.clone();
+        // Power computation thread
+        let power_computation_thread = s.spawn(move |_| {
+            let mut prev_state = Arc::new(CPUState::default());
+            for state in rx_state.clone() {
+                println!("Power queue len {}", rx_state.len());
+                if exit_code_ref.load(Ordering::Acquire) != 0 {
+                    break;
+                }
+                let power = state.compute_power(Some(&prev_state), &power_config);
+                power_values.push(power);
+                prev_state = state;
+            }
+        });
+        let log_file_reader = BufReader::new(log_file);
+        let line_parse_iter = log_file_reader.lines();
+        let mut line_ctr = 0;
+        for line_result in line_parse_iter {
+            let line = match line_result {
+                Ok(ref s) => s,
+                Err(e) => {
+                    eprintln!("Error reading file: {}", e);
+                    exit_code.store(1, Ordering::Release);
+                    break;
+                }
+            };
+            match parse_commit_line(&line) {
+                Ok((state, delta)) => {
+                    tx_parsed.send((state, delta)).unwrap();
+                    println!("Parse queue len {}", tx_parsed.len());
+                },
+                Err(e) => {
+                    eprintln!("Error with line {}: {}", line, e);
+                    exit_code.store(1, Ordering::Release);
+                    break;
+                }
+            }
+            line_ctr+=1;
+            println!("Line {}", line_ctr);
         }
-    });
-
-    let (tx_pc, rx_pc) = crossbeam_channel::unbounded();
-    let (tx_state, rx_state) = crossbeam_channel::unbounded();
-
-    let location_labels = AtomicRefCell::new(Vec::new());
-    let location_labels_ref = &location_labels;
-
-    let power_values = AtomicRefCell::new(Vec::new());
-    let power_values_ref = &power_values;
-
-    rayon::scope(move |s| {
-        s.spawn(move |_| {
+        cpu_state_thread.join();
+        location_classifier_thread.join();
+        power_computation_thread.join();
+        return exit_code.load(Ordering::Acquire);
+    }).unwrap();
+    computation_block_result
+    //let power_computation_thread = 
+    //let exit_status: Result<(), i32> = 
+    /*rayon::scope_fifo(move |s| {
+        //let early_stop: AtomicI32 = AtomicI32::new(0);
+        s.spawn_fifo(move |_| {
             let mut prev_cpu_state = CPUState::default();
 
             let mut expected_index = 0;
@@ -144,13 +202,13 @@ fn run() -> i32 {
         
             assert_eq!(stashed_states.len(), 0);
         });
-        s.spawn(move |_| {
+        s.spawn_fifo(move |_| {
             let mut location_vec = location_labels_ref.borrow_mut();
             for pc in rx_pc {
                 location_vec.push(pc);
             }
         });
-        s.spawn(move |_| {
+        s.spawn_fifo(move |_| {
             let mut power_vec = power_values_ref.borrow_mut();
             let mut prev_state = CPUState::default();
             for state in rx_state {
@@ -158,13 +216,36 @@ fn run() -> i32 {
                 power_vec.push(power);
                 prev_state = state;
             }
-            println!("{:#?}", prev_state);
+            //println!("{:#?}", prev_state);
         });
-    });
-    println!("{:x}", location_labels.borrow().last().unwrap());
-    println!("{}", power_values.borrow().last().unwrap());
-    match states {
+        line_parse_iter.try_for_each_with(tx_parsed, |tx, (i, line_result)| {
+            let line = match line_result {
+                Ok(ref s) => s,
+                Err(e) => {
+                    eprintln!("Error reading file: {}", e);
+                    return Err(1);
+                }
+            };
+            println!("{}",tx.len());
+            match parse_commit_line(&line) {
+                Ok((state, delta)) => {
+                    tx.send((i, state, delta)).unwrap();
+                    return Ok(());
+                },
+                Err(e) => {
+                    eprintln!("Error with line {}: {}", line, e);
+                    return Err(1);
+                }
+            }
+        })
+    });*/
+    //println!("{:x}", location_labels.borrow().last().unwrap());
+    //println!("{}", power_values.borrow().last().unwrap());
+    /*for val in &*power_values.borrow() {
+        println!("{}", val);
+    }*/
+    /*match exit_status {
         Ok(()) => 0,
         Err(e) => e
-    }
+    }*/
 }
