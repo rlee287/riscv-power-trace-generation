@@ -11,7 +11,6 @@ mem_track = []
 lazy_static = "1.4"
 crossbeam-utils = "0.8"
 crossbeam-channel = "0.5"
-#atomic_refcell = "0.1"
 toml = "0.5"
 serde = {version = "1.0", features = [ "derive" ]}
 
@@ -19,8 +18,3 @@ serde = {version = "1.0", features = [ "derive" ]}
 version = "1.5"
 default-features = false
 features = [ "std", "perf" ]
-
-[dependencies.addr2line]
-version = "0.17.0"
-default-features = false
-features = [ "cpp_demangle" ]

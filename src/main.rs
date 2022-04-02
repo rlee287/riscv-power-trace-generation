@@ -82,6 +82,7 @@ fn run() -> i32 {
     eprintln!("Generating power data");
     scope(|s| {
         let exit_code_ref = exit_code.clone();
+        let pc_range = power_config.pc_range;
         // CPU state thread
         s.spawn(move |_| {
             let mut prev_cpu_state = Arc::new(CPUState::default());
@@ -130,7 +131,8 @@ fn run() -> i32 {
         });
         let log_file_reader = BufReader::new(log_file);
         let line_parse_iter = log_file_reader.lines();
-        let mut line_ctr = 0;
+        let mut track_state = pc_range.is_none();
+        let mut sent_anything = false;
         for line_result in line_parse_iter {
             let line = match line_result {
                 Ok(ref s) => s,
@@ -142,7 +144,20 @@ fn run() -> i32 {
             };
             match parse_commit_line(&line) {
                 Ok((state, delta)) => {
-                    tx_parsed.send((state, delta)).unwrap();
+                    if let Some(range) = pc_range {
+                        if state.pc() == range.start {
+                            eprintln!("Starting data capture");
+                            track_state = true;
+                            sent_anything = true;
+                        } else if state.pc() == range.stop {
+                            track_state = false;
+                            eprintln!("Stopping data capture");
+                            break;
+                        }
+                    }
+                    if track_state {
+                        tx_parsed.send((state, delta)).unwrap();
+                    }
                     //println!("Parse queue len {}", tx_parsed.len());
                 },
                 Err(e) => {
@@ -151,10 +166,15 @@ fn run() -> i32 {
                     break;
                 }
             }
-            line_ctr+=1;
             //eprintln!("Line {}", line_ctr);
         }
         drop(tx_parsed);
+        if !sent_anything {
+            eprintln!("Warning: start pc was never hit")
+        }
+        if pc_range.is_some() && track_state == true {
+            eprintln!("Warning: end pc was never hit")
+        }
     }).unwrap();
 
     let out_vec = Arc::try_unwrap(power_values).unwrap().into_inner().unwrap();
