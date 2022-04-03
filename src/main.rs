@@ -1,6 +1,8 @@
 use std::fs::File;
 use std::io::{Read, Write, BufRead, BufReader, BufWriter};
 
+use clap::{Arg, Command};
+
 mod cpu_structs;
 mod power_config;
 mod arithmetic_utils;
@@ -21,12 +23,16 @@ fn main() {
     std::process::exit(exit_code);
 }
 fn run() -> i32 {
-    let input_args: Vec<_> = std::env::args().collect();
-    if input_args.len() != 4 {
-        eprintln!("Usage: {} log_file config_file output_file", input_args[0]);
-        return 2;
-    }
-    let log_file_name = input_args[1].as_str();
+    let cmd_parser = Command::new("RISCV power trace generator")
+        .arg(Arg::new("config_file").takes_value(true).required(true)
+            .long("config-file"))
+        .arg(Arg::new("output_file").takes_value(true).required(true)
+            .long("output-file").short('o'))
+        .arg(Arg::new("log_files").takes_value(true).required(true)
+            .last(true));
+    let cmd_args = cmd_parser.get_matches();
+
+    let log_file_name = cmd_args.value_of("log_files").unwrap();
     let log_file = match File::open(log_file_name) {
         Ok(fil) => fil,
         Err(e) => {
@@ -34,7 +40,7 @@ fn run() -> i32 {
             return 1;
         }
     };
-    let config_file_name = input_args[2].as_str();
+    let config_file_name = cmd_args.value_of("config_file").unwrap();
     let mut config_file = match File::open(config_file_name) {
         Ok(fil) => fil,
         Err(e) => {
@@ -60,7 +66,7 @@ fn run() -> i32 {
     drop(config_file_contents);
     drop(config_file);
 
-    let output_file_name = input_args[3].as_str();
+    let output_file_name = cmd_args.value_of("output_file").unwrap();
     let output_file = match File::create(output_file_name) {
         Ok(fil) => fil,
         Err(e) => {
