@@ -17,8 +17,11 @@ pub struct CPUState {
     pc: u64,
     instr: u32,
     xregs: [u64; 31], // + zero-reg
-    // Address being transmitted on the memory bus
-    memaddr: u64,
+    // Memory bus values
+    membus_addr: u64,
+    membus_read: u64,
+    membus_write: u64,
+    membus_strobe: u8,
     // Use BTreeMap and its arrays for locality
     #[cfg(feature = "mem_track")]
     memory: BTreeMap<u64, u8>,
@@ -77,7 +80,10 @@ impl BitXor for &CPUState {
             pc: self.pc ^ rhs.pc,
             instr: self.instr ^ rhs.instr,
             xregs: new_xregs,
-            memaddr: self.memaddr ^ rhs.memaddr,
+            membus_addr: self.membus_addr ^ rhs.membus_addr,
+            membus_read: self.membus_read ^ rhs.membus_read,
+            membus_write: self.membus_write ^ rhs.membus_write,
+            membus_strobe: self.membus_strobe ^ rhs.membus_strobe,
             #[cfg(feature = "mem_track")]
             memory: new_memory,
             csr: new_csr
@@ -110,7 +116,9 @@ impl CPUState {
     }
     pub fn copy_persistent_state(&mut self, old_state: &CPUState) {
         self.xregs = old_state.xregs;
-        self.memaddr = old_state.memaddr;
+        self.membus_addr = old_state.membus_addr;
+        self.membus_read = old_state.membus_read;
+        self.membus_write = old_state.membus_write;
         #[cfg(feature = "mem_track")]
         {
             self.memory = old_state.memory.clone();
@@ -136,16 +144,34 @@ impl CPUState {
         }
         match delta.memory_op {
             Some(MemoryOperation::MemoryLoad { addr }) => {
-                self.memaddr = addr;
+                self.membus_addr = addr;
             }
-            #[cfg(feature = "mem_track")]
             Some(MemoryOperation::MemoryStore { addr, value }) => {
-                self.memaddr = addr;
+                self.membus_addr = addr;
+                #[cfg(feature = "mem_track")]
                 self.write_store(addr, value);
+
+                self.membus_write = value.into();
+                self.membus_strobe = match value {
+                    StoreVal::U8(_)  => 0x01 << (addr % 8),
+                    StoreVal::U16(_) => 0x03 << (addr % 8),
+                    StoreVal::U32(_) => 0x0f << (addr % 8),
+                    StoreVal::U64(_) => 0xff
+                }
             },
-            #[cfg(not(feature = "mem_track"))]
-            Some(MemoryOperation::MemoryStore { addr }) => {
-                self.memaddr = addr;
+            Some(MemoryOperation::MemoryLoadStore { addr , value}) => {
+                self.membus_addr = addr;
+                #[cfg(feature = "mem_track")]
+                self.write_store(addr, value);
+
+                self.membus_read = value.into();
+                self.membus_write = value.into();
+                self.membus_strobe = match value {
+                    StoreVal::U8(_)  => 0x01 << (addr % 8),
+                    StoreVal::U16(_) => 0x03 << (addr % 8),
+                    StoreVal::U32(_) => 0x0f << (addr % 8),
+                    StoreVal::U64(_) => 0xff
+                }
             },
             None => {}
         }
@@ -160,8 +186,14 @@ impl CPUState {
         let xregs_power = self.xregs.map(|regval| {
             power.xregs.weight_multiplier * f64::from(regval.count_ones())
         });
-        let memaddr_power = power.memaddr.weight_multiplier *
-            f64::from(self.memaddr.count_ones());
+        let membus_addr_power = power.membus.weight_multiplier *
+            f64::from(self.membus_addr.count_ones());
+        let membus_read_power = power.membus.weight_multiplier *
+            f64::from(self.membus_read.count_ones());
+        let membus_write_power = power.membus.weight_multiplier *
+            f64::from(self.membus_write.count_ones());
+        let membus_strobe_power = power.membus.weight_multiplier *
+            f64::from(self.membus_strobe.count_ones());
         #[cfg(feature = "mem_track")]
         let memory_power = self.memory.values().map(|byte| {
             power.memory.weight_multiplier * f64::from(byte.count_ones())
@@ -172,7 +204,9 @@ impl CPUState {
             power.csr.weight_multiplier * f64::from(csr_reg.count_ones())
         });
         let weight_iter = [priv_power].into_iter()
-            .chain([pc_power, instr_power, memaddr_power])
+            .chain([pc_power, instr_power])
+            .chain([membus_addr_power, membus_read_power])
+            .chain([membus_write_power, membus_strobe_power])
             .chain(xregs_power)
             .chain(memory_power)
             .chain(csr_power);
@@ -190,8 +224,14 @@ impl CPUState {
                 let xregs_power = delta_state.xregs.map(|regval| {
                     power.xregs.delta_multiplier * f64::from(regval.count_ones())
                 });
-                let memaddr_power = power.memaddr.delta_multiplier *
-                    f64::from(delta_state.memaddr.count_ones());
+                let membus_addr_power = power.membus.delta_multiplier *
+                    f64::from(delta_state.membus_addr.count_ones());
+                let membus_read_power = power.membus.weight_multiplier *
+                    f64::from(delta_state.membus_read.count_ones());
+                let membus_write_power = power.membus.weight_multiplier *
+                    f64::from(delta_state.membus_write.count_ones());
+                let membus_strobe_power = power.membus.weight_multiplier *
+                    f64::from(delta_state.membus_strobe.count_ones());
                 #[cfg(feature = "mem_track")]
                 let memory_power = delta_state.memory.values().map(|byte| {
                     power.memory.delta_multiplier * f64::from(byte.count_ones())
@@ -202,7 +242,9 @@ impl CPUState {
                     power.csr.delta_multiplier * f64::from(csr_reg.count_ones())
                 });
                 let delta_iter = [priv_power].into_iter()
-                    .chain([pc_power, instr_power, memaddr_power])
+                    .chain([pc_power, instr_power])
+                    .chain([membus_addr_power, membus_read_power])
+                    .chain([membus_write_power, membus_strobe_power])
                     .chain(xregs_power)
                     .chain(memory_power)
                     .chain(csr_power);
@@ -279,11 +321,10 @@ lazy_static! {
      * 2: Memory value, if present
      */
     static ref MEM_CHANGE: Regex = Regex::new(
-        " mem 0x([[:xdigit:]]{16})(?: 0x((?:[[:xdigit:]][[:xdigit:]])+))?"
+        " mem 0x([[:xdigit:]]{16})(?: 0x((?:[[:xdigit:]])+))?"
     ).unwrap();
 }
 
-#[cfg(feature = "mem_track")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StoreVal {
     U8(u8),
@@ -291,7 +332,6 @@ enum StoreVal {
     U32(u32),
     U64(u64)
 }
-#[cfg(feature = "mem_track")]
 impl StoreVal {
     pub fn byte_len(&self) -> usize {
         match self {
@@ -302,7 +342,6 @@ impl StoreVal {
         }
     }
 }
-#[cfg(feature = "mem_track")]
 impl FromStr for StoreVal {
     type Err = CPUStateStrParseErr;
 
@@ -310,7 +349,7 @@ impl FromStr for StoreVal {
         // We expect from_str_radix to always suceed due to expected input
         // Failure has the same semantic cause as regex failure, so report that
         match s.len() {
-            2 => {
+            1 | 2 => {
                 match u8::from_str_radix(s, 16) {
                     Ok(val) => Ok(StoreVal::U8(val)),
                     Err(_) => Err(CPUStateStrParseErr::RegexFail)
@@ -338,6 +377,23 @@ impl FromStr for StoreVal {
         }
     }
 }
+impl From<StoreVal> for u64 {
+    fn from(store_val: StoreVal) -> Self {
+        match store_val {
+            StoreVal::U8(val) => u64::from(val),
+            StoreVal::U16(val) => u64::from(val),
+            StoreVal::U32(val) => u64::from(val),
+            StoreVal::U64(val) => val,
+        }
+    }
+}
+impl Default for StoreVal {
+    fn default() -> Self {
+        // Assume that a full read happened before we started logging
+        Self::U64(0)
+    }
+}
+
 // Keep even without mem_track for tracking the bus
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryOperation {
@@ -346,7 +402,10 @@ enum MemoryOperation {
     // Stores have a size to account for
     MemoryStore {
         addr: u64,
-        #[cfg(feature = "mem_track")]
+        value: StoreVal
+    },
+    MemoryLoadStore {
+        addr: u64,
         value: StoreVal
     }
 }
@@ -356,7 +415,7 @@ pub struct CPUStateDelta {
     csr_registers: [Option<(u16, u64)>; 2],
     memory_op: Option<MemoryOperation>
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CPUStateStrParseErr {
     InvalidPrivilege(u8),
     InvalidRegister(u8),
@@ -379,13 +438,22 @@ impl FromStr for CPUStateDelta {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut ret_delta = CPUStateDelta::default();
         let xreg_captures_opt = XREG_CHANGE.captures(s);
-        let csr_captures = CSR_CHANGE.captures_iter(s);
-        let mem_captures_opt = MEM_CHANGE.captures(s);
+        let csr_captures: Vec<_> = CSR_CHANGE.captures_iter(s).collect();
+        let mem_captures: Vec<_> = MEM_CHANGE.captures_iter(s).collect();
+
+        if csr_captures.len()>2 {
+            // TODO: better error, if this actually gets hit
+            return Err(CPUStateStrParseErr::RegexFail);
+        }
+        if mem_captures.len()>2 {
+            return Err(CPUStateStrParseErr::RegexFail);
+        }
         /*
-         * At most one match will occur for most regex:
-         * - Register transfers only write to one
-         * - Up to two CSR registers are written to
-         * - RISC-V is a load-store architecture so at most one memory operation occurs per instruction
+         * Possible state transitions
+         * - Only one x register can be written to
+         * - Up to two CSR registers can be written to
+         * - Up to two memory operations occurs per instruction
+         * (Even though RISC-V is load-store atomic fetch-and-[action] instructions can affect more than one location)
          */
         if let Some(xreg_captures) = xreg_captures_opt {
             let reg = u8::from_str(&xreg_captures[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
@@ -395,33 +463,89 @@ impl FromStr for CPUStateDelta {
             let reg_val = u64::from_str_radix(&xreg_captures[2], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
             ret_delta.x_register = Some((reg, reg_val));
         }
-        for (i, csr_capture) in csr_captures.enumerate() {
-            if i>=2 {
-                // TODO: better error, if this actually gets hit
-                return Err(CPUStateStrParseErr::RegexFail);
-            }
+        for (i,csr_capture) in csr_captures.into_iter().enumerate() {
             let csr_addr = u16::from_str(&csr_capture[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
             let csr_val = u64::from_str_radix(&csr_capture[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
             ret_delta.csr_registers[i] = Some((csr_addr, csr_val));
         }
-        if let Some(mem_captures) = mem_captures_opt {
-            let mem_addr = u64::from_str_radix(&mem_captures[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
-            match mem_captures.get(2) {
+        let temp_capture_iter: Vec<_> = mem_captures.into_iter().map(|mem_capture| {
+            let mem_addr = u64::from_str_radix(&mem_capture[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            match mem_capture.get(2) {
                 Some(val_match) => {
-                    ret_delta.memory_op = Some(MemoryOperation::MemoryStore {
+                    Result::<MemoryOperation, CPUStateStrParseErr>::Ok(MemoryOperation::MemoryStore {
                         addr: mem_addr,
-                        #[cfg(feature = "mem_track")]
                         value: StoreVal::from_str(val_match.as_str())?
-                    });
+                    })
                 },
                 None => {
-                    ret_delta.memory_op = Some(MemoryOperation::MemoryLoad {
+                    Ok(MemoryOperation::MemoryLoad {
                         addr: mem_addr
-                    });
+                    })
                 }
             }
-            //println!("{}", s);
-            //println!("{:?}", ret_delta.memory_op);
+        }).collect();
+        match &temp_capture_iter[..] {
+            [] => {}, // Do nothing
+            [mem_op_result] => {
+                match mem_op_result {
+                    Ok (mem_op) => {
+                        ret_delta.memory_op = Some(*mem_op);
+                    },
+                    Err(e) => {
+                        return Err(*e)
+                    }
+                }
+            },
+            [mem_op_result_1, mem_op_result_2] => {
+                if mem_op_result_1.is_err() || mem_op_result_2.is_err() {
+                    return Err(CPUStateStrParseErr::RegexFail)
+                }
+                let mut load_addr: Option<u64> = None;
+                match mem_op_result_1 {
+                    Ok(MemoryOperation::MemoryStore { addr, value }) => {
+                        ret_delta.memory_op = Some(
+                            MemoryOperation::MemoryLoadStore{
+                                addr: *addr, value: *value
+                            }
+                        );
+                    },
+                    Ok(MemoryOperation::MemoryLoad { addr }) => {
+                        load_addr = Some(*addr)
+                    }
+                    _ => {
+                        return Err(CPUStateStrParseErr::RegexFail)
+                    }
+                }
+                match mem_op_result_2 {
+                    Ok(MemoryOperation::MemoryStore { addr, value }) => {
+                        if ret_delta.memory_op.is_some() {
+                            // Illegal state of 2 stores
+                            return Err(CPUStateStrParseErr::RegexFail);
+                        }
+                        ret_delta.memory_op = Some(
+                            MemoryOperation::MemoryLoadStore{
+                                addr: *addr, value: *value
+                            }
+                        );
+                    },
+                    Ok(MemoryOperation::MemoryLoad { addr }) => {
+                        if load_addr.is_some() {
+                            // Illegal state of 2 loads
+                            return Err(CPUStateStrParseErr::RegexFail);
+                        }
+                        load_addr = Some(*addr)
+                    }
+                    _ => {
+                        return Err(CPUStateStrParseErr::RegexFail)
+                    }
+                }
+                if load_addr.is_none() {
+                    return Err(CPUStateStrParseErr::RegexFail);
+                }
+            },
+            _ => {
+                return Err(CPUStateStrParseErr::RegexFail);
+            }
         }
         Ok(ret_delta)
     }
@@ -442,7 +566,10 @@ pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUSta
         instr,
         pc,
         xregs: [0; 31],
-        memaddr: 0,
+        membus_addr: 0,
+        membus_read: 0,
+        membus_write: 0,
+        membus_strobe: 0,
         #[cfg(feature = "mem_track")]
         memory: BTreeMap::new(),
         csr: HashMap::new()
@@ -460,7 +587,17 @@ mod test {
 
     #[test]
     fn mem_regex() {
-        let input_str = " mem 0x0000003ffffffa08 0x0000000000014288";
-        assert!(MEM_CHANGE.find(input_str).is_some())
+        let input_str_1 = " mem 0x0000003ffffffa08 0x0000000000014288";
+        let captures_1 = MEM_CHANGE.captures(input_str_1);
+        assert!(captures_1.is_some());
+        let captures_1 = captures_1.unwrap();
+        assert_eq!(&captures_1[1], "0000003ffffffa08");
+        assert_eq!(&captures_1[2], "0000000000014288");
+        let input_str_2 = "mem 0x000000008000fe60 0x0";
+        let captures_2 = MEM_CHANGE.captures(input_str_2);
+        assert!(captures_2.is_some());
+        let captures_2 = captures_2.unwrap();
+        assert_eq!(&captures_2[1], "0000003ffffffa08");
+        assert_eq!(&captures_2[2], "0000000000014288");
     }
 }

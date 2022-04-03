@@ -25,7 +25,7 @@ pub struct CPUPowerSettings {
     pub pc: PowerSettings,
     pub instr: PowerSettings,
     pub xregs: PowerSettings,
-    pub memaddr: PowerSettings,
+    pub membus: PowerSettings,
     pub memory: PowerSettings,
     pub csr: PowerSettings
 }
