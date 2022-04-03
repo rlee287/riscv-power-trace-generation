@@ -119,6 +119,7 @@ impl CPUState {
         self.membus_addr = old_state.membus_addr;
         self.membus_read = old_state.membus_read;
         self.membus_write = old_state.membus_write;
+        self.csr = old_state.csr.clone();
         #[cfg(feature = "mem_track")]
         {
             self.memory = old_state.memory.clone();
@@ -145,6 +146,9 @@ impl CPUState {
         match delta.memory_op {
             Some(MemoryOperation::MemoryLoad { addr }) => {
                 self.membus_addr = addr;
+                if let Some((_reg, val)) = delta.x_register {
+                    self.membus_read = val;
+                }
             }
             Some(MemoryOperation::MemoryStore { addr, value }) => {
                 self.membus_addr = addr;
@@ -404,6 +408,7 @@ enum MemoryOperation {
         addr: u64,
         value: StoreVal
     },
+    // XXX: for atomic instructions, load and store value may differ, but we don't track this
     MemoryLoadStore {
         addr: u64,
         value: StoreVal
