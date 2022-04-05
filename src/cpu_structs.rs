@@ -337,6 +337,7 @@ enum StoreVal {
     U64(u64)
 }
 impl StoreVal {
+    #[cfg(feature = "mem_track")]
     pub fn byte_len(&self) -> usize {
         match self {
             StoreVal::U8(_) => 1,

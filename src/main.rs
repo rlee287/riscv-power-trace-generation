@@ -10,13 +10,19 @@ mod arithmetic_utils;
 use cpu_structs::{CPUState, CPUStateDelta};
 use cpu_structs::parse_commit_line;
 
-use power_config::CPUPowerSettings;
+use power_config::Config;
+
+use range_union_find::IntRangeUnionFind;
+use std::ops::Bound;
 
 //use rayon::prelude::*;
 use crossbeam_utils::thread::scope;
 //use std::thread::spawn;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{Ordering, AtomicI32};
+
+type LabelBitFlag = u16;
+const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
 fn main() {
     let exit_code = run();
@@ -26,11 +32,19 @@ fn run() -> i32 {
     let cmd_parser = Command::new("RISCV power trace generator")
         .arg(Arg::new("config_file").takes_value(true).required(true)
             .long("config-file"))
+        .arg(Arg::new("print_power").long("print-power"))
+        .arg(Arg::new("print_pc").long("print-pc").conflicts_with("print_power"))
+        .arg(Arg::new("print_label").long("print-label")
+            .conflicts_with("print_power").conflicts_with("print_pc"))
         .arg(Arg::new("output_file").takes_value(true).required(true)
             .long("output-file").short('o'))
         .arg(Arg::new("log_files").takes_value(true).required(true)
             .last(true));
     let cmd_args = cmd_parser.get_matches();
+
+    if !cmd_args.is_present("print_pc") && !cmd_args.is_present("print_power") && !cmd_args.is_present("print_label") {
+        todo!("Final HDF5 not ready");
+    }
 
     let log_file_name = cmd_args.value_of("log_files").unwrap();
     let log_file = match File::open(log_file_name) {
@@ -56,7 +70,7 @@ fn run() -> i32 {
             return 1;
         }
     }
-    let power_config: CPUPowerSettings = match toml::from_slice(&config_file_contents) {
+    let config: Config = match toml::from_slice(&config_file_contents) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error parsing config file: {}", e);
@@ -65,6 +79,27 @@ fn run() -> i32 {
     };
     drop(config_file_contents);
     drop(config_file);
+
+    println!("{:?}", config);
+    //let clock_frequency = power_config.clock_frequency;
+    let pc_range = config.pc_range;
+    let label_indexes = match &config.pc_labels {
+        Some(labels) => {
+            if labels.len() >= MAX_LABELS {
+                eprintln!("Error parsing config files: too many classes");
+                return 1;
+            }
+            Some(labels.keys().cloned().collect::<Vec<_>>())
+        },
+        None => {None}
+    };
+    let range_lookups = config.pc_labels.map(|dict| {
+        dict.values().map(|vec| {
+            IntRangeUnionFind::from_iter(vec.iter().map(
+                |(a,b)| (Bound::Included(*a), Bound::Included(*b))))
+        }).collect::<Vec<_>>()
+    });
+    let power_config = config.power_settings;
 
     let output_file_name = cmd_args.value_of("output_file").unwrap();
     let output_file = match File::create(output_file_name) {
@@ -81,14 +116,13 @@ fn run() -> i32 {
     let (tx_state, rx_state) = crossbeam_channel::bounded(1024*4);
 
     let location_labels = Arc::new(Mutex::new(Vec::new()));
-
+    let pc_values = Arc::new(Mutex::new(Vec::new()));
     let power_values = Arc::new(Mutex::new(Vec::new()));
 
     let exit_code = Arc::new(AtomicI32::new(0));
     eprintln!("Generating power data");
     scope(|s| {
         let exit_code_ref = exit_code.clone();
-        let pc_range = power_config.pc_range;
         // CPU state thread
         s.spawn(move |_| {
             let mut prev_cpu_state = Arc::new(CPUState::default());
@@ -107,16 +141,28 @@ fn run() -> i32 {
             }
         });
         let exit_code_ref = exit_code.clone();
+        let pc_values_lock = pc_values.clone();
         let location_label_lock = location_labels.clone();
         // Location classifier thread
         s.spawn(move |_| {
+            let mut pc_values = pc_values_lock.lock().unwrap();
             let mut location_labels = location_label_lock.lock().unwrap();
             for pc in rx_pc.clone() {
                 //println!("PC queue len {}", rx_pc.len());
                 if exit_code_ref.load(Ordering::Acquire) != 0 {
                     break;
                 }
-                location_labels.push(pc);
+                pc_values.push(pc);
+                if let Some(ref range_obj_vec) = range_lookups {
+                    let mut label: u32 = 0;
+                    for (i, range_obj) in range_obj_vec.iter().enumerate() {
+                        assert!(i <= MAX_LABELS);
+                        if range_obj.has_element(&pc) {
+                            label |= 1 << i;
+                        }
+                    }
+                    location_labels.push(label);
+                }
             }
         });
         let exit_code_ref = exit_code.clone();
@@ -183,12 +229,26 @@ fn run() -> i32 {
         }
     }).unwrap();
 
-    let out_vec = Arc::try_unwrap(power_values).unwrap().into_inner().unwrap();
+    let out_pc_vec = Arc::try_unwrap(pc_values).unwrap().into_inner().unwrap();
+    let out_power_vec = Arc::try_unwrap(power_values).unwrap().into_inner().unwrap();
+    let out_location_vec = Arc::try_unwrap(location_labels).unwrap().into_inner().unwrap();
 
     eprintln!("Writing outputs to file");
     let mut buf_out_file = BufWriter::new(output_file);
-    for val in out_vec {
-        writeln!(buf_out_file, "{}", val).unwrap();
+    if cmd_args.is_present("print_power") {
+        for val in out_power_vec {
+            writeln!(buf_out_file, "{}", val).unwrap();
+        }
+    }
+    if cmd_args.is_present("print_pc") {
+        for val in out_pc_vec {
+            writeln!(buf_out_file, "0x{:016x}", val).unwrap();
+        }
+    }
+    if cmd_args.is_present("print_label") {
+        for val in out_location_vec {
+            writeln!(buf_out_file, "{:016b}", val).unwrap();
+        }
     }
     exit_code.load(Ordering::Acquire)
 }

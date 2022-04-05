@@ -17,13 +17,19 @@ pub struct PCFilter {
     pub start: u64,
     pub stop: u64
 }
-
+#[derive(Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq)]
+pub struct Config {
+    pub clock_frequency: f64,
+    pub pc_range: Option<PCFilter>,
+    // We rely on the key sorted property for consistent labeling
+    pub pc_labels: Option<BTreeMap<String, Vec<(u64, u64)>>>,
+    #[serde(flatten)]
+    pub power_settings: CPUPowerSettings
+}
 #[derive(Deserialize)]
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CPUPowerSettings {
-    pub clock_frequency: f64,
-    pub pc_range: Option<PCFilter>,
-    pub pc_labels: Option<BTreeMap<String, Vec<(u64, u64)>>>,
     pub r#priv: PowerSettings,
     pub pc: PowerSettings,
     pub instr: PowerSettings,
