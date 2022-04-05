@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use std::collections::BTreeMap;
+
 #[derive(Deserialize)]
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct PowerSettings {
@@ -17,10 +19,11 @@ pub struct PCFilter {
 }
 
 #[derive(Deserialize)]
-#[derive(Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct CPUPowerSettings {
     pub clock_frequency: f64,
     pub pc_range: Option<PCFilter>,
+    pub pc_labels: Option<BTreeMap<String, Vec<(u64, u64)>>>,
     pub r#priv: PowerSettings,
     pub pc: PowerSettings,
     pub instr: PowerSettings,
