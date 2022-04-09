@@ -25,9 +25,11 @@ const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
 const HDF5_CHUNK_SIZE: usize = 256;
 const CHANNEL_SIZE: usize = 8*1024;
+const COMPRESSION_AMOUNT: u8 = 9;
 
 fn main() {
     static_assertions::const_assert!(HDF5_CHUNK_SIZE < CHANNEL_SIZE);
+    static_assertions::const_assert!(COMPRESSION_AMOUNT <= 9);
     let exit_code = run();
     std::process::exit(exit_code);
 }
@@ -202,7 +204,7 @@ fn run() -> i32 {
                     label_attr.write_scalar(&label_config_writable).unwrap();
         
                     let label_dataset = group.new_dataset::<u32>()
-                        .deflate(9)
+                        .deflate(COMPRESSION_AMOUNT)
                         .chunk((HDF5_CHUNK_SIZE,))
                         .shape((0..,))
                         .create("labels").unwrap();
@@ -222,7 +224,7 @@ fn run() -> i32 {
                     power
                 });
                 let pow_dataset = group.new_dataset::<f64>()
-                    .deflate(9)
+                    .deflate(COMPRESSION_AMOUNT)
                     .chunk((HDF5_CHUNK_SIZE,))
                     .shape((0..,))
                     .create("power").unwrap();
@@ -295,7 +297,7 @@ fn run() -> i32 {
         if exit_code_val != 0 {
             return 1;
         }
-
+        println!("Done processing file");
         out_file.flush().unwrap();
     }
 
