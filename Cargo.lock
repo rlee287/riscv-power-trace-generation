@@ -317,6 +317,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "static_assertions",
  "toml",
 ]
 
@@ -434,6 +435,12 @@ name = "sorted-vec"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c026467316e4ed9196f9ebe09c7801e4541c9052bf9f0d34b6f6c504ffccc233"
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "syn"

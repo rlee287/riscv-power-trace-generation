@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, BufRead, BufReader, Seek};
+use std::io::{Read, BufRead, BufReader};
 
 use clap::{Arg, Command};
 
@@ -16,18 +16,18 @@ use power_config::Config;
 use range_union_find::IntRangeUnionFind;
 use std::ops::Bound;
 
-//use rayon::prelude::*;
 use crossbeam_utils::thread::scope;
-//use std::thread::spawn;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicI32};
 
 type LabelBitFlag = u16;
 const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
 const HDF5_CHUNK_SIZE: usize = 256;
+const CHANNEL_SIZE: usize = 8*1024;
 
 fn main() {
+    static_assertions::const_assert!(HDF5_CHUNK_SIZE < CHANNEL_SIZE);
     let exit_code = run();
     std::process::exit(exit_code);
 }
@@ -114,74 +114,109 @@ fn run() -> i32 {
             None => log_file_name
         };
 
-        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(CPUState, CPUStateDelta)>(1024*4);
+        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(CPUState, CPUStateDelta)>(CHANNEL_SIZE);
     
-        let (tx_pc, rx_pc) = crossbeam_channel::bounded(1024*4);
-        let (tx_state, rx_state) = crossbeam_channel::bounded(1024*4);
-    
-        let location_labels = Mutex::new(Vec::new());
-        let pc_values = Mutex::new(Vec::new());
-        let power_values = Mutex::new(Vec::new());
+        let (tx_pc, rx_pc) = crossbeam_channel::bounded(CHANNEL_SIZE);
+        let (tx_state, rx_state) = crossbeam_channel::bounded(CHANNEL_SIZE);
+
+        let group = out_file.create_group(log_file_name_only).unwrap();
+
+        let pow_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
+            .create("power_config").unwrap();
+        let power_config_writable: hdf5::types::VarLenUnicode = power_config_str.parse().unwrap();
+        pow_attr.write_scalar(&power_config_writable).unwrap();
 
         let exit_code = AtomicI32::new(0);
         eprintln!("Generating power data for {}", log_file_name_only);
         scope(|s| {
+            let (tx_pc_2, rx_pc_2) = match range_lookups.is_some() {
+                true => {
+                    let (tx, rx) = crossbeam_channel::bounded(CHANNEL_SIZE);
+                    (Some(tx), Some(rx))
+                },
+                false => (None, None)
+            };
             // CPU state thread
             s.spawn(|_| {
+                //println!("CPU thread start");
                 let mut prev_cpu_state = Arc::new(CPUState::default());
                 for (mut recv_state, delta) in rx_parsed {
-                    if (&exit_code).load(Ordering::Acquire) != 0 {
-                        break;
-                    }
                     recv_state.copy_persistent_state(&prev_cpu_state);
                     recv_state.apply(delta);
                     let recv_state_arc = Arc::new(recv_state);
-                    tx_pc.send(recv_state_arc.pc()).unwrap();
+                    let pc_val = recv_state_arc.pc();
+                    tx_pc.send(pc_val).unwrap();
+                    if let Some(ref tx_pc_2) = tx_pc_2 {
+                        tx_pc_2.send(pc_val).unwrap()
+                    }
                     // Stream over states to another thread for power calc
                     tx_state.send(recv_state_arc.clone()).unwrap();
                     prev_cpu_state = recv_state_arc;
                 }
+                //println!("Done computing CPU state");
                 drop(tx_pc);
+                drop(tx_pc_2);
                 drop(tx_state);
             });
-            // Location classifier thread
+            // Write pc vals to file
             s.spawn(|_| {
-                let mut pc_values = (&pc_values).lock().unwrap();
-                let mut location_labels = (&location_labels).lock().unwrap();
-                for pc in rx_pc {
-                    //println!("PC queue len {}", rx_pc.len());
-                    if (&exit_code).load(Ordering::Acquire) != 0 {
-                        break;
-                    }
-                    pc_values.push(pc);
-                    if let Some(ref range_obj_vec) = range_lookups {
-                        let mut label: u32 = 0;
-                        for (i, range_obj) in range_obj_vec.iter().enumerate() {
-                            assert!(i <= MAX_LABELS);
-                            if range_obj.has_element(&pc) {
-                                label |= 1 << i;
-                            }
-                        }
-                        location_labels.push(label);
-                    }
-                }
+                //println!("PC write thread start");
+                let pc_dataset = group.new_dataset::<u64>()
+                    .deflate(9)
+                    .chunk((HDF5_CHUNK_SIZE,))
+                    .shape((0..,))
+                    .create("pc").unwrap();
+                hdf5_helper::write_iter_to_dataset(&pc_dataset, rx_pc);
+                //println!("Done writing pcs");
             });
+            if let Some(ref range_obj_vec) = range_lookups {
+                let label_iter = rx_pc_2.unwrap().into_iter().map(|pc| {
+                    let mut label: u32 = 0;
+                    for (i, range_obj) in range_obj_vec.iter().enumerate() {
+                        assert!(i <= MAX_LABELS);
+                        if range_obj.has_element(&pc) {
+                            label |= 1 << i;
+                        }
+                    }
+                    label
+                });
+                // Location classifier thread
+                s.spawn(|_| {
+                    //println!("Label write thread start");
+                    let label_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
+                    .create("label_mapping").unwrap();
+                    let label_config_writable: hdf5::types::VarLenUnicode = label_index_str_option.as_ref().unwrap().parse().unwrap();
+                    label_attr.write_scalar(&label_config_writable).unwrap();
+        
+                    let label_dataset = group.new_dataset::<u32>()
+                        .deflate(9)
+                        .chunk((HDF5_CHUNK_SIZE,))
+                        .shape((0..,))
+                        .create("labels").unwrap();
+
+                    hdf5_helper::write_iter_to_dataset(&label_dataset, label_iter);
+                    //println!("Done writing labels");
+                });
+            }
+
             // Power computation thread
             s.spawn(|_| {
-                let mut power_values = (&power_values).lock().unwrap();
+                //println!("Power thread start");
                 let mut prev_state = Arc::new(CPUState::default());
-                for state in rx_state.clone() {
-                    //println!("Power queue len {}", rx_state.len());
-                    if (&exit_code).load(Ordering::Acquire) != 0 {
-                        break;
-                    }
+                let pow_iter = rx_state.into_iter().map(|state| {
                     let power = state.compute_power(Some(&prev_state), &power_config);
-                    power_values.push(power);
                     prev_state = state;
-                }
+                    power
+                });
+                let pow_dataset = group.new_dataset::<f64>()
+                    .deflate(9)
+                    .chunk((HDF5_CHUNK_SIZE,))
+                    .shape((0..,))
+                    .create("power").unwrap();
+                hdf5_helper::write_iter_to_dataset(&pow_dataset, pow_iter);
+                //println!("Done writing power");
             });
-            let mut log_file_reader = BufReader::new(log_file);
-            log_file_reader.seek(std::io::SeekFrom::Start(0)).unwrap();
+            let log_file_reader = BufReader::new(log_file);
 
             let line_parse_iter = log_file_reader.lines();
             let mut track_state = pc_range.is_none();
@@ -211,7 +246,6 @@ fn run() -> i32 {
                         if track_state {
                             tx_parsed.send((state, delta)).unwrap();
                         }
-                        //println!("Parse queue len {}", tx_parsed.len());
                     },
                     Err(e) => {
                         eprintln!("Error with line {}: {}", line, e);
@@ -221,6 +255,7 @@ fn run() -> i32 {
                 }
                 //eprintln!("Line {}", line_ctr);
             }
+            println!("Done sending lines");
             drop(tx_parsed);
             if !sent_anything {
                 eprintln!("Warning: start pc was never hit")
@@ -235,45 +270,6 @@ fn run() -> i32 {
             return 1;
         }
 
-        let out_pc_vec = pc_values.into_inner().unwrap();
-        let out_power_vec = power_values.into_inner().unwrap();
-        let out_label_vec = location_labels.into_inner().unwrap();
-
-        let group = out_file.create_group(log_file_name_only).unwrap();
-
-        let pc_dataset = group.new_dataset::<u64>()
-            .deflate(9)
-            .chunk((HDF5_CHUNK_SIZE,))
-            .shape((0..,))
-            .create("pc").unwrap();
-        hdf5_helper::write_iter_to_dataset(&pc_dataset, out_pc_vec);
-
-        let pow_dataset = group.new_dataset::<f64>()
-            .deflate(9)
-            .chunk((HDF5_CHUNK_SIZE,))
-            .shape((0..,))
-            .create("power").unwrap();
-        hdf5_helper::write_iter_to_dataset(&pow_dataset, out_power_vec);
-
-        let pow_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
-            .create("power_config").unwrap();
-        let power_config_writable: hdf5::types::VarLenUnicode = power_config_str.parse().unwrap();
-        pow_attr.write_scalar(&power_config_writable).unwrap();
-
-        if let Some(ref label_str) = label_index_str_option {
-            let label_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
-            .create("label_mapping").unwrap();
-            let label_config_writable: hdf5::types::VarLenUnicode = label_str.parse().unwrap();
-            label_attr.write_scalar(&label_config_writable).unwrap();
-
-            let label_dataset = group.new_dataset::<u32>()
-                .deflate(9)
-                .chunk((HDF5_CHUNK_SIZE,))
-                .shape((0..,))
-                .create("labels").unwrap();
-            
-            hdf5_helper::write_iter_to_dataset(&label_dataset, out_label_vec);
-        }
         out_file.flush().unwrap();
     }
 
