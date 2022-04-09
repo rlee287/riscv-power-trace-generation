@@ -102,7 +102,8 @@ fn run() -> i32 {
     };
 
     let log_file_names: Vec<_> = cmd_args.values_of("log_files").unwrap().collect();
-    for log_file_name in log_file_names {
+    let log_file_count = log_file_names.len();
+    for (ctr, log_file_name) in log_file_names.into_iter().enumerate() {
         let log_file = match File::open(log_file_name) {
             Ok(fil) => fil,
             Err(e) => {
@@ -115,6 +116,8 @@ fn run() -> i32 {
             Some(name) => name,
             None => log_file_name
         };
+        eprintln!("Generating power data for {} ({}/{})",
+            log_file_name_only, ctr+1, log_file_count);
 
         let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(CPUState, CPUStateDelta)>(CHANNEL_SIZE);
     
@@ -142,7 +145,6 @@ fn run() -> i32 {
         };
 
         let exit_code = AtomicI32::new(0);
-        eprintln!("Generating power data for {}", log_file_name_only);
         scope(|s| {
             let (tx_pc_2, rx_pc_2) = match range_lookups.is_some() {
                 true => {
