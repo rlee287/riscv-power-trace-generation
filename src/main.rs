@@ -9,7 +9,7 @@ mod arithmetic_utils;
 mod hdf5_helper;
 
 use cpu_structs::{CPUState, CPUStateDelta};
-use cpu_structs::parse_commit_line;
+use cpu_structs::{parse_commit_line, get_pc};
 
 use power_config::Config;
 
@@ -126,6 +126,19 @@ fn run() -> i32 {
         let power_config_writable: hdf5::types::VarLenUnicode = power_config_str.parse().unwrap();
         pow_attr.write_scalar(&power_config_writable).unwrap();
 
+        let json_file_name = log_file_name.replace(".log",".json");
+        match std::fs::read(&json_file_name) {
+            Ok(data) => {
+                let key_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
+                    .create("data_config").unwrap();
+                let data_writable: hdf5::types::VarLenUnicode = String::from_utf8(data).unwrap().parse().unwrap();
+                key_attr.write_scalar(&data_writable).unwrap();
+            },
+            Err(e) => {
+                eprintln!("Warning: could not open JSON {}: {}", json_file_name, e);
+            }
+        };
+
         let exit_code = AtomicI32::new(0);
         eprintln!("Generating power data for {}", log_file_name_only);
         scope(|s| {
@@ -230,27 +243,40 @@ fn run() -> i32 {
                         break;
                     }
                 };
-                match parse_commit_line(&line) {
-                    Ok((state, delta)) => {
-                        if let Some(range) = pc_range {
-                            if state.pc() == range.start {
+                // When not capturing yet, use simpler regex to grab pc
+                if !track_state {
+                    match get_pc(&line) {
+                        Ok(pc) => {
+                            if pc == pc_range.unwrap().start {
                                 eprintln!("Starting data capture");
                                 track_state = true;
                                 sent_anything = true;
-                            } else if state.pc() == range.stop {
-                                track_state = false;
-                                eprintln!("Stopping data capture");
-                                break;
                             }
+                        },
+                        Err(e) => {
+                            eprintln!("Error with line {}: {}", line, e);
+                            exit_code.store(1, Ordering::Release);
+                            break;
                         }
-                        if track_state {
+                    }
+                }
+                if track_state {
+                    match parse_commit_line(&line) {
+                        Ok((state, delta)) => {
+                            if let Some(range) = pc_range {
+                                if state.pc() == range.stop {
+                                    track_state = false;
+                                    eprintln!("Stopping data capture");
+                                    break;
+                                }
+                            }
                             tx_parsed.send((state, delta)).unwrap();
+                        },
+                        Err(e) => {
+                            eprintln!("Error with line {}: {}", line, e);
+                            exit_code.store(1, Ordering::Release);
+                            break;
                         }
-                    },
-                    Err(e) => {
-                        eprintln!("Error with line {}: {}", line, e);
-                        exit_code.store(1, Ordering::Release);
-                        break;
                     }
                 }
                 //eprintln!("Line {}", line_ctr);

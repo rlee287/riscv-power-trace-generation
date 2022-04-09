@@ -293,6 +293,18 @@ lazy_static! {
     ).unwrap();
     /* Capturing groups:
      * 0: The entire thing
+     * 1: Program Counter: u64
+     * 2: Everything else
+     */
+    static ref TRACE_PC_REGEX: Regex = Regex::new(concat!("^",
+        "core *[[:digit:]]+: ",
+        "[[:digit:]] ",
+        "0x([[:xdigit:]]{16})",
+        ".+",
+        "$")
+    ).unwrap();
+    /* Capturing groups:
+     * 0: The entire thing
      * 1: Register number, if present
      * 2: Register value, if present
      * 3: Memory address, if present
@@ -555,6 +567,11 @@ impl FromStr for CPUStateDelta {
         }
         Ok(ret_delta)
     }
+}
+
+pub fn get_pc(line: &str) -> Result<u64, CPUStateStrParseErr> {
+    let line_capture = TRACE_PC_REGEX.captures(line).ok_or(CPUStateStrParseErr::RegexFail)?;
+    Ok(u64::from_str_radix(&line_capture[1], 16).unwrap())
 }
 
 pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUStateStrParseErr> {
