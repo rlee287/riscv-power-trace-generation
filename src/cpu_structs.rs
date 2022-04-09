@@ -471,7 +471,7 @@ impl FromStr for CPUStateDelta {
         }
         for (i,csr_capture) in csr_captures.into_iter().enumerate() {
             let csr_addr = u16::from_str(&csr_capture[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
-            let csr_val = u64::from_str_radix(&csr_capture[1], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            let csr_val = u64::from_str_radix(&csr_capture[2], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
             ret_delta.csr_registers[i] = Some((csr_addr, csr_val));
         }
         let temp_capture_iter: Vec<_> = mem_captures.into_iter().map(|mem_capture| {
