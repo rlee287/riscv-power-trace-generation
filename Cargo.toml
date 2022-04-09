@@ -11,9 +11,12 @@ mem_track = []
 lazy_static = "1.4"
 crossbeam-utils = "0.8"
 crossbeam-channel = "0.5"
+itertools = "0.10"
 toml = "0.5"
 serde = {version = "1.0", features = [ "derive" ]}
 range_union_find = {version = "0.4", default-features = false}
+hdf5 = "0.8"
+serde_json = "1.0"
 
 [dependencies.regex]
 version = "1.5"

@@ -1,8 +1,8 @@
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 
 use std::collections::BTreeMap;
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub struct PowerSettings {
     pub weight_multiplier: f64,
@@ -20,14 +20,13 @@ pub struct PCFilter {
 #[derive(Deserialize)]
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Config {
-    pub clock_frequency: f64,
     pub pc_range: Option<PCFilter>,
     // We rely on the key sorted property for consistent labeling
     pub pc_labels: Option<BTreeMap<String, Vec<(u64, u64)>>>,
     #[serde(flatten)]
     pub power_settings: CPUPowerSettings
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CPUPowerSettings {
     pub r#priv: PowerSettings,
