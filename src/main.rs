@@ -238,7 +238,7 @@ fn run() -> i32 {
             let line_parse_iter = log_file_reader.lines();
             let mut track_state = pc_range.is_none();
             let mut sent_anything = false;
-            for line_result in line_parse_iter {
+            for (line_no, line_result) in line_parse_iter.enumerate() {
                 let line = match line_result {
                     Ok(ref s) => s,
                     Err(e) => {
@@ -258,7 +258,7 @@ fn run() -> i32 {
                             }
                         },
                         Err(e) => {
-                            eprintln!("Error with line {}: {}", line, e);
+                            eprintln!("Error with line {} {}: {}", line_no+1, line, e);
                             exit_code.store(1, Ordering::Release);
                             break;
                         }
@@ -277,7 +277,7 @@ fn run() -> i32 {
                             tx_parsed.send((state, delta)).unwrap();
                         },
                         Err(e) => {
-                            eprintln!("Error with line {}: {}", line, e);
+                            eprintln!("Error with line {} {}: {}", line_no+1, line, e);
                             exit_code.store(1, Ordering::Release);
                             break;
                         }
