@@ -87,7 +87,7 @@ fn run() -> i32 {
             },
             None => BTreeSet::new()
         };
-        if !non_sticky.intersection(&sticky).collect::<Vec<_>>().is_empty() {
+        if non_sticky.intersection(&sticky).next().is_some() {
             eprintln!("Error parsing config files: non-sticky and sticky labels overlap");
             return 1;
         }
@@ -143,7 +143,7 @@ fn run() -> i32 {
             }
         };
 
-        let log_file_name_only = match log_file_name.split("/").last() {
+        let log_file_name_only = match log_file_name.split('/').last() {
             Some(name) => name,
             None => log_file_name
         };
@@ -293,7 +293,7 @@ fn run() -> i32 {
                 };
                 // When not capturing yet, use simpler regex to grab pc
                 if !track_state {
-                    match get_pc(&line) {
+                    match get_pc(line) {
                         Ok(pc) => {
                             if pc == pc_range.unwrap().start {
                                 eprintln!("Starting data capture");
@@ -309,7 +309,7 @@ fn run() -> i32 {
                     }
                 }
                 if track_state {
-                    match parse_commit_line(&line) {
+                    match parse_commit_line(line) {
                         Ok((state, delta)) => {
                             if let Some(range) = pc_range {
                                 if state.pc() == range.stop {
@@ -334,7 +334,7 @@ fn run() -> i32 {
             if !sent_anything {
                 eprintln!("Warning: start pc was never hit")
             }
-            if pc_range.is_some() && track_state == true {
+            if pc_range.is_some() && track_state {
                 eprintln!("Warning: end pc was never hit")
             }
         }).unwrap();
