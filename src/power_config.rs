@@ -23,6 +23,7 @@ pub struct Config {
     pub pc_range: Option<PCFilter>,
     // We rely on the key sorted property for consistent labeling
     pub pc_labels: Option<BTreeMap<String, Vec<(u64, u64)>>>,
+    pub pc_labels_sticky: Option<BTreeMap<String, (u64, u64)>>,
     #[serde(flatten)]
     pub power_settings: CPUPowerSettings
 }

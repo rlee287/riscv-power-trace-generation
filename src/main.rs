@@ -15,6 +15,7 @@ use power_config::Config;
 
 use range_union_find::IntRangeUnionFind;
 use std::ops::Bound;
+use std::collections::{BTreeSet, BTreeMap};
 
 use crossbeam_utils::thread::scope;
 use std::sync::Arc;
@@ -72,23 +73,41 @@ fn run() -> i32 {
     //println!("{:?}", config);
 
     let pc_range = config.pc_range;
-    let label_indexes = match &config.pc_labels {
-        Some(labels) => {
-            if labels.len() >= MAX_LABELS {
-                eprintln!("Error parsing config files: too many classes");
-                return 1;
-            }
-            Some(labels.keys().cloned().collect::<Vec<_>>())
-        },
-        None => {None}
+    let label_indexes = {
+        let non_sticky = match &config.pc_labels {
+            Some(labels) => {
+                labels.keys().cloned().collect::<BTreeSet<_>>()
+            },
+            None => BTreeSet::new()
+        };
+        let sticky = match &config.pc_labels_sticky {
+            Some(labels_sticky) => {
+                labels_sticky.keys().cloned().collect::<BTreeSet<_>>()
+            },
+            None => BTreeSet::new()
+        };
+        let labels = non_sticky.union(&sticky).cloned().collect::<Vec<_>>();
+        if labels.len() >= MAX_LABELS {
+            eprintln!("Error parsing config files: too many classes");
+            return 1;
+        }
+        labels
     };
-    let label_index_str_option = label_indexes.map(|label_vec| serde_json::to_string(&label_vec).unwrap());
-    let range_lookups = config.pc_labels.map(|dict| {
-        dict.values().map(|vec| {
-            IntRangeUnionFind::from_iter(vec.iter().map(
-                |(a,b)| (Bound::Included(*a), Bound::Included(*b))))
-        }).collect::<Vec<_>>()
-    });
+    let label_index_str_option = match label_indexes.len() {
+        0 => None,
+        _ => Some(serde_json::to_string(&label_indexes).unwrap())
+    };
+    let range_lookups = match config.pc_labels {
+        Some(dict) => {
+            dict.iter().map(|(k,vec)| {
+                (k.clone(),IntRangeUnionFind::from_iter(vec.iter().map(
+                    |(a,b)| (Bound::Included(*a), Bound::Included(*b)))))
+            }).collect::<BTreeMap<_,_>>()
+        },
+        None => BTreeMap::new()
+    };
+    let pc_lookups_sticky = config.pc_labels_sticky.unwrap_or_default();
+
     let power_config = config.power_settings;
     let power_config_str = serde_json::to_string(&power_config).unwrap();
 
@@ -146,12 +165,13 @@ fn run() -> i32 {
 
         let exit_code = AtomicI32::new(0);
         scope(|s| {
-            let (tx_pc_2, rx_pc_2) = match range_lookups.is_some() {
-                true => {
-                    let (tx, rx) = crossbeam_channel::bounded(CHANNEL_SIZE);
-                    (Some(tx), Some(rx))
-                },
-                false => (None, None)
+            let (tx_pc_2, rx_pc_2, tx_pc_3, rx_pc_3) = match label_indexes.len() {
+                0 => (None, None, None, None),
+                _ => {
+                    let (tx_2, rx_2) = crossbeam_channel::bounded(CHANNEL_SIZE);
+                    let (tx_3, rx_3) = crossbeam_channel::bounded(CHANNEL_SIZE);
+                    (Some(tx_2), Some(rx_2), Some(tx_3), Some(rx_3))
+                }
             };
             // CPU state thread
             s.spawn(|_| {
@@ -166,13 +186,18 @@ fn run() -> i32 {
                     if let Some(ref tx_pc_2) = tx_pc_2 {
                         tx_pc_2.send(pc_val).unwrap()
                     }
+                    if let Some(ref tx_pc_3) = tx_pc_3 {
+                        tx_pc_3.send(pc_val).unwrap()
+                    }
                     // Stream over states to another thread for power calc
                     tx_state.send(recv_state_arc.clone()).unwrap();
                     prev_cpu_state = recv_state_arc;
                 }
                 //println!("Done computing CPU state");
                 drop(tx_pc);
+                // Dropping an Option::None is a no-op
                 drop(tx_pc_2);
+                drop(tx_pc_3);
                 drop(tx_state);
             });
             // Write pc vals to file
@@ -186,17 +211,33 @@ fn run() -> i32 {
                 hdf5_helper::write_iter_to_dataset(&pc_dataset, rx_pc);
                 //println!("Done writing pcs");
             });
-            if let Some(ref range_obj_vec) = range_lookups {
+            if !label_indexes.is_empty() {
                 let label_iter = rx_pc_2.unwrap().into_iter().map(|pc| {
                     let mut label: u32 = 0;
-                    for (i, range_obj) in range_obj_vec.iter().enumerate() {
+                    for (i, label_name) in label_indexes.iter().enumerate() {
                         assert!(i <= MAX_LABELS);
-                        if range_obj.has_element(&pc) {
-                            label |= 1 << i;
+                        if let Some(pc_rangeset) = range_lookups.get(label_name) {
+                            if pc_rangeset.has_element(&pc) {
+                                label |= 1 << i;
+                            }
                         }
                     }
                     label
                 });
+                let label_sticky_iter = rx_pc_3.unwrap().into_iter().scan(0,|sticky_label, pc| {
+                    for (i, label_name) in label_indexes.iter().enumerate() {
+                        assert!(i <= MAX_LABELS);
+                        if let Some((start, stop)) = pc_lookups_sticky.get(label_name) {
+                            if pc == *start {
+                                *sticky_label |= 1 << i;
+                            } else if pc == *stop {
+                                *sticky_label &= !(1 << i);
+                            }
+                        }
+                    }
+                    Some(*sticky_label)
+                });
+                let labels_combined = label_iter.zip(label_sticky_iter).map(|(a,b)| a | b);
                 // Location classifier thread
                 s.spawn(|_| {
                     //println!("Label write thread start");
@@ -211,7 +252,7 @@ fn run() -> i32 {
                         .shape((0..,))
                         .create("labels").unwrap();
 
-                    hdf5_helper::write_iter_to_dataset(&label_dataset, label_iter);
+                    hdf5_helper::write_iter_to_dataset(&label_dataset, labels_combined);
                     //println!("Done writing labels");
                 });
             }
