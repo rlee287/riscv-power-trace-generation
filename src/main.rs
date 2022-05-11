@@ -36,6 +36,7 @@ fn main() {
     std::process::exit(exit_code);
 }
 fn run() -> i32 {
+    coz::thread_init();
     let cmd_parser = Command::new("RISCV power trace generator")
         .arg(Arg::new("config_file").takes_value(true).required(true)
             .long("config-file"))
@@ -176,6 +177,7 @@ fn run() -> i32 {
         };
 
         let exit_code = AtomicI32::new(0);
+        coz::begin!("main loop");
         scope(|s| {
             let (tx_pc_2, rx_pc_2) = match label_indexes.len() {
                 0 => (None, None),
@@ -186,9 +188,11 @@ fn run() -> i32 {
             };
             // CPU state thread
             s.spawn(|_| {
+                coz::thread_init();
                 //println!("CPU thread start");
                 let mut prev_cpu_state = Arc::new(CPUState::default());
                 for (mut recv_state, delta) in rx_parsed {
+                    coz::progress!("CPU state");
                     recv_state.copy_persistent_state(&prev_cpu_state);
                     recv_state.apply(delta);
                     let recv_state_arc = Arc::new(recv_state);
@@ -209,13 +213,16 @@ fn run() -> i32 {
             });
             // Write pc vals to file
             s.spawn(|_| {
+                coz::thread_init();
                 //println!("PC write thread start");
                 let pc_dataset = group.new_dataset::<u64>()
                     .deflate(9)
                     .chunk((HDF5_CHUNK_SIZE,))
                     .shape((0..,))
                     .create("pc").unwrap();
+                coz::begin!("pc write");
                 hdf5_helper::write_iter_to_dataset(&pc_dataset, rx_pc);
+                coz::end!("pc write");
                 //println!("Done writing pcs");
             });
             if !pc_label_lookups.is_empty() {
@@ -243,6 +250,7 @@ fn run() -> i32 {
                 });
                 // Location classifier thread
                 s.spawn(|_| {
+                    coz::thread_init();
                     //println!("Label write thread start");
                     let label_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
                     .create("label_mapping").unwrap();
@@ -255,13 +263,16 @@ fn run() -> i32 {
                         .shape((0..,))
                         .create("labels").unwrap();
 
+                    coz::begin!("label write");
                     hdf5_helper::write_iter_to_dataset(&label_dataset, label_iter);
+                    coz::end!("label write");
                     //println!("Done writing labels");
                 });
             }
 
             // Power computation thread
             s.spawn(|_| {
+                coz::thread_init();
                 //println!("Power thread start");
                 let mut prev_state = Arc::new(CPUState::default());
                 let pow_iter = rx_state.into_iter().map(|state| {
@@ -274,7 +285,9 @@ fn run() -> i32 {
                     .chunk((HDF5_CHUNK_SIZE,))
                     .shape((0..,))
                     .create("power").unwrap();
+                coz::begin!("power write");
                 hdf5_helper::write_iter_to_dataset(&pow_dataset, pow_iter);
+                coz::end!("power write");
                 //println!("Done writing power");
             });
             let log_file_reader = BufReader::new(log_file);
@@ -283,6 +296,7 @@ fn run() -> i32 {
             let mut track_state = pc_range.is_none();
             let mut sent_anything = false;
             for (line_no, line_result) in line_parse_iter.enumerate() {
+                coz::progress!("file parse");
                 let line = match line_result {
                     Ok(ref s) => s,
                     Err(e) => {
@@ -338,6 +352,7 @@ fn run() -> i32 {
                 eprintln!("Warning: end pc was never hit")
             }
         }).unwrap();
+        coz::end!("main loop");
 
         let exit_code_val = exit_code.load(Ordering::Acquire);
         if exit_code_val != 0 {
