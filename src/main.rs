@@ -26,7 +26,7 @@ type LabelBitFlag = u16;
 const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
 const HDF5_CHUNK_SIZE: usize = 256;
-const CHANNEL_SIZE: usize = 8*1024;
+const CHANNEL_SIZE: usize = 1024;
 const COMPRESSION_AMOUNT: u8 = 9;
 
 fn main() {
