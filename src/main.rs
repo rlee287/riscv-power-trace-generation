@@ -163,17 +163,19 @@ fn run() -> i32 {
         pow_attr.write_scalar(&power_config_writable).unwrap();
 
         let json_file_name = log_file_name.replace(".log",".json");
-        match std::fs::read(&json_file_name) {
-            Ok(data) => {
-                let key_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
-                    .create("data_config").unwrap();
-                let data_writable: hdf5::types::VarLenUnicode = String::from_utf8(data).unwrap().parse().unwrap();
-                key_attr.write_scalar(&data_writable).unwrap();
-            },
-            Err(e) => {
-                eprintln!("Warning: could not open JSON {}: {}", json_file_name, e);
-            }
-        };
+        if log_file_name != json_file_name {
+            match std::fs::read(&json_file_name) {
+                Ok(data) => {
+                    let key_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
+                        .create("data_config").unwrap();
+                    let data_writable: hdf5::types::VarLenUnicode = String::from_utf8(data).unwrap().parse().unwrap();
+                    key_attr.write_scalar(&data_writable).unwrap();
+                },
+                Err(e) => {
+                    eprintln!("Warning: could not open JSON {}: {}", json_file_name, e);
+                }
+            };
+        }
 
         let exit_code = AtomicI32::new(0);
         scope(|s| {
