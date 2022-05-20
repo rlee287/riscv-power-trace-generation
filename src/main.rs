@@ -7,6 +7,7 @@ mod cpu_structs;
 mod power_config;
 mod arithmetic_utils;
 mod hdf5_helper;
+mod memory;
 
 use cpu_structs::{CPUState, CPUStateDelta};
 use cpu_structs::{parse_commit_line, get_pc};
