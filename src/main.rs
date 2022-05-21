@@ -9,7 +9,7 @@ mod arithmetic_utils;
 mod hdf5_helper;
 mod memory;
 
-use cpu_structs::{CPUState, CPUStateDelta};
+use cpu_structs::{ParsedCPUState, CPUState, CPUStateDelta};
 use cpu_structs::{parse_commit_line, get_pc};
 
 use power_config::Config;
@@ -23,7 +23,7 @@ use crossbeam_utils::thread::scope;
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicI32};
 
-type LabelBitFlag = u16;
+type LabelBitFlag = u32;
 const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
 const HDF5_CHUNK_SIZE: usize = 256;
@@ -151,7 +151,7 @@ fn run() -> i32 {
         eprintln!("Generating power data for {} ({}/{})",
             log_file_name_only, ctr+1, log_file_count);
 
-        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(CPUState, CPUStateDelta)>(CHANNEL_SIZE);
+        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(ParsedCPUState, CPUStateDelta)>(CHANNEL_SIZE);
     
         let (tx_pc, rx_pc) = crossbeam_channel::bounded(CHANNEL_SIZE);
         let (tx_state, rx_state) = crossbeam_channel::bounded(CHANNEL_SIZE);
@@ -191,10 +191,10 @@ fn run() -> i32 {
             s.spawn(|_| {
                 //println!("CPU thread start");
                 let mut prev_cpu_state = Arc::new(CPUState::default());
-                for (mut recv_state, delta) in rx_parsed {
-                    recv_state.copy_persistent_state(&prev_cpu_state);
-                    recv_state.apply(delta);
-                    let recv_state_arc = Arc::new(recv_state);
+                for (recv_state, delta) in rx_parsed {
+                    let mut new_state = recv_state.apply_persistent_state(&prev_cpu_state);
+                    new_state.apply(delta);
+                    let recv_state_arc = Arc::new(new_state);
                     let pc_val = recv_state_arc.pc();
                     tx_pc.send(pc_val).unwrap();
                     if let Some(ref tx_pc_2) = tx_pc_2 {
@@ -222,7 +222,7 @@ fn run() -> i32 {
                 //println!("Done writing pcs");
             });
             if !pc_label_lookups.is_empty() {
-                let label_iter = rx_pc_2.unwrap().into_iter().scan(0u32,|sticky_label, pc| {
+                let label_iter = rx_pc_2.unwrap().into_iter().scan(0 as LabelBitFlag,|sticky_label, pc| {
                     for (i, pc_filter) in pc_label_lookups.iter().enumerate() {
                         assert!(i <= MAX_LABELS);
                         match pc_filter {
@@ -252,7 +252,7 @@ fn run() -> i32 {
                     let label_config_writable: hdf5::types::VarLenUnicode = label_index_str_option.as_ref().unwrap().parse().unwrap();
                     label_attr.write_scalar(&label_config_writable).unwrap();
         
-                    let label_dataset = group.new_dataset::<u32>()
+                    let label_dataset = group.new_dataset::<LabelBitFlag>()
                         .deflate(COMPRESSION_AMOUNT)
                         .chunk((HDF5_CHUNK_SIZE,))
                         .shape((0..,))

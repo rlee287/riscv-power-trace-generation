@@ -12,6 +12,34 @@ use crate::power_config::CPUPowerSettings;
 use crate::arithmetic_utils;
 use crate::memory::StoreVal;
 
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedCPUState {
+    privilege_state: u8,
+    pc: u64,
+    instr: u32
+}
+impl ParsedCPUState {
+    #[inline(always)]
+    pub fn pc(&self) -> u64 {
+        self.pc
+    }
+    pub fn apply_persistent_state(self, old_state: &CPUState) -> CPUState {
+        CPUState {
+            privilege_state: self.privilege_state,
+            pc: self.pc,
+            instr: self.instr,
+            xregs: old_state.xregs,
+            membus_addr: old_state.membus_addr,
+            membus_read: old_state.membus_read,
+            membus_write: old_state.membus_write,
+            membus_strobe: old_state.membus_strobe,
+            csr: old_state.csr.clone(),
+            #[cfg(feature = "mem_track")]
+            memory: old_state.memory.clone()
+        }
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct CPUState {
     privilege_state: u8,
@@ -113,17 +141,6 @@ impl CPUState {
             } else {
                 self.memory.insert(abs_addr, *byte);
             }
-        }
-    }
-    pub fn copy_persistent_state(&mut self, old_state: &CPUState) {
-        self.xregs = old_state.xregs;
-        self.membus_addr = old_state.membus_addr;
-        self.membus_read = old_state.membus_read;
-        self.membus_write = old_state.membus_write;
-        self.csr = old_state.csr.clone();
-        #[cfg(feature = "mem_track")]
-        {
-            self.memory = old_state.memory.clone();
         }
     }
     pub fn apply(&mut self, delta: CPUStateDelta) {
@@ -505,7 +522,7 @@ pub fn get_pc(line: &str) -> Result<u64, CPUStateStrParseErr> {
     Ok(u64::from_str_radix(&line_capture[1], 16).unwrap())
 }
 
-pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUStateStrParseErr> {
+pub fn parse_commit_line(line: &str) -> Result<(ParsedCPUState, CPUStateDelta), CPUStateStrParseErr> {
     let line_capture = TRACE_REGEX.captures(line).ok_or(CPUStateStrParseErr::RegexFail)?;
     let priv_level = u8::from_str(&line_capture[1]).unwrap();
     if ![0,1,3].contains(&priv_level) {
@@ -515,18 +532,10 @@ pub fn parse_commit_line(line: &str) -> Result<(CPUState, CPUStateDelta), CPUSta
     // Approximation: we'd expect a real CPU to decode compressed instructions
     let instr = u32::from_str_radix(&line_capture[3], 16).unwrap();
 
-    let cpu_state = CPUState {
+    let cpu_state = ParsedCPUState {
         privilege_state: priv_level, 
         instr,
-        pc,
-        xregs: [0; 31],
-        membus_addr: 0,
-        membus_read: 0,
-        membus_write: 0,
-        membus_strobe: 0,
-        #[cfg(feature = "mem_track")]
-        memory: BTreeMap::new(),
-        csr: HashMap::new()
+        pc
     };
     let delta = match line_capture.get(4) {
         Some(m) => CPUStateDelta::from_str(m.as_str())?,
