@@ -69,11 +69,13 @@ impl BitXor for &CPUState {
         }
 
         #[cfg(feature = "mem_track")]
+        let mut new_memory: BTreeMap<u64, u8>;
+        #[cfg(feature = "mem_track")]
         {
             // Copy over distinct values for each, and then XOR shared ones
             let self_mem_keys: BTreeSet<_> = self.memory.keys().collect();
             let rhs_mem_keys: BTreeSet<_> = rhs.memory.keys().collect();
-            let mut new_memory = BTreeMap::new();
+            new_memory = BTreeMap::new();
             for self_key in self_mem_keys.difference(&rhs_mem_keys) {
                 new_memory.insert(**self_key, *self.memory.get(self_key).unwrap()).ok_or(()).unwrap_err();
             }

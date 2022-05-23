@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+#[cfg(feature = "mem_track")]
 use std::collections::BTreeMap;
 
 use crate::cpu_structs::CPUStateStrParseErr;
