@@ -558,11 +558,11 @@ mod test {
         let captures_1 = captures_1.unwrap();
         assert_eq!(&captures_1[1], "0000003ffffffa08");
         assert_eq!(&captures_1[2], "0000000000014288");
-        let input_str_2 = "mem 0x000000008000fe60 0x0";
+        let input_str_2 = " mem 0x000000008000fe60 0x0";
         let captures_2 = MEM_CHANGE.captures(input_str_2);
         assert!(captures_2.is_some());
         let captures_2 = captures_2.unwrap();
-        assert_eq!(&captures_2[1], "0000003ffffffa08");
-        assert_eq!(&captures_2[2], "0000000000014288");
+        assert_eq!(&captures_2[1], "000000008000fe60");
+        assert_eq!(&captures_2[2], "0");
     }
 }
