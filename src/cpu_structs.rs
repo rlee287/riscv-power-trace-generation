@@ -143,7 +143,7 @@ impl CPUState {
             }
         }
     }
-    pub fn apply(&mut self, delta: CPUStateDelta) {
+    pub fn apply(&mut self, delta: ParsedCPUStateDelta) {
         if let Some((reg, val)) = delta.x_register {
             self.xregs[(reg-1) as usize] = val;
         }
@@ -376,7 +376,7 @@ enum MemoryOperation {
     }
 }
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CPUStateDelta {
+pub struct ParsedCPUStateDelta {
     x_register: Option<(u8, u64)>,
     csr_registers: [Option<(u16, u64)>; 2],
     memory_op: Option<MemoryOperation>
@@ -398,11 +398,11 @@ impl fmt::Display for CPUStateStrParseErr {
         }
     }
 }
-impl FromStr for CPUStateDelta {
+impl FromStr for ParsedCPUStateDelta {
     type Err = CPUStateStrParseErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut ret_delta = CPUStateDelta::default();
+        let mut ret_delta = ParsedCPUStateDelta::default();
         let xreg_captures_opt = XREG_CHANGE.captures(s);
         let csr_captures: Vec<_> = CSR_CHANGE.captures_iter(s).collect();
         let mem_captures: Vec<_> = MEM_CHANGE.captures_iter(s).collect();
@@ -522,7 +522,7 @@ pub fn get_pc(line: &str) -> Result<u64, CPUStateStrParseErr> {
     Ok(u64::from_str_radix(&line_capture[1], 16).unwrap())
 }
 
-pub fn parse_commit_line(line: &str) -> Result<(ParsedCPUState, CPUStateDelta), CPUStateStrParseErr> {
+pub fn parse_commit_line(line: &str) -> Result<(ParsedCPUState, ParsedCPUStateDelta), CPUStateStrParseErr> {
     let line_capture = TRACE_REGEX.captures(line).ok_or(CPUStateStrParseErr::RegexFail)?;
     let priv_level = u8::from_str(&line_capture[1]).unwrap();
     if ![0,1,3].contains(&priv_level) {
@@ -538,8 +538,8 @@ pub fn parse_commit_line(line: &str) -> Result<(ParsedCPUState, CPUStateDelta), 
         pc
     };
     let delta = match line_capture.get(4) {
-        Some(m) => CPUStateDelta::from_str(m.as_str())?,
-        None => CPUStateDelta::default()
+        Some(m) => ParsedCPUStateDelta::from_str(m.as_str())?,
+        None => ParsedCPUStateDelta::default()
     };
     Ok((cpu_state, delta))
 }

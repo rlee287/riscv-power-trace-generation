@@ -9,7 +9,7 @@ mod arithmetic_utils;
 mod hdf5_helper;
 mod memory;
 
-use cpu_structs::{ParsedCPUState, CPUState, CPUStateDelta};
+use cpu_structs::{ParsedCPUState, CPUState, ParsedCPUStateDelta};
 use cpu_structs::{parse_commit_line, get_pc};
 
 use power_config::Config;
@@ -151,7 +151,7 @@ fn run() -> i32 {
         eprintln!("Generating power data for {} ({}/{})",
             log_file_name_only, ctr+1, log_file_count);
 
-        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(ParsedCPUState, CPUStateDelta)>(CHANNEL_SIZE);
+        let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(ParsedCPUState, ParsedCPUStateDelta)>(CHANNEL_SIZE);
     
         let (tx_pc, rx_pc) = crossbeam_channel::bounded(CHANNEL_SIZE);
         let (tx_state, rx_state) = crossbeam_channel::bounded(CHANNEL_SIZE);
