@@ -23,6 +23,8 @@ use crossbeam_utils::thread::scope;
 use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicI32};
 
+use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
+
 type LabelBitFlag = u32;
 const MAX_LABELS: usize = LabelBitFlag::BITS as usize;
 
@@ -134,8 +136,28 @@ fn run() -> i32 {
     };
 
     let log_file_names: Vec<_> = cmd_args.values_of("log_files").unwrap().collect();
-    let log_file_count = log_file_names.len();
-    for (ctr, log_file_name) in log_file_names.into_iter().enumerate() {
+    let log_file_count: u64 = log_file_names.len().try_into().unwrap();
+
+    let log_file_pb_style = ProgressStyle::default_bar().template("{msg} {wide_bar} {pos}/{len}");
+    let parse_spinner_style = ProgressStyle::default_spinner()
+        .template("{spinner} ({pos}/{len}) {msg}");
+
+    let pb_union = MultiProgress::new();
+    let log_file_pb = pb_union.add(ProgressBar::new(log_file_count));
+    log_file_pb.set_message("File progress");
+    log_file_pb.set_style(log_file_pb_style);
+    let parse_spinner = pb_union.add(ProgressBar::new_spinner());
+    parse_spinner.set_length(3);
+    parse_spinner.set_style(parse_spinner_style);
+    parse_spinner.enable_steady_tick(125);
+
+    let pb_thread_handle = std::thread::spawn(move || {
+        pb_union.join().unwrap();
+    });
+
+    let mut real_exit_code = 0;
+
+    for log_file_name in log_file_pb.wrap_iter(log_file_names.into_iter()) {
         let log_file = match File::open(log_file_name) {
             Ok(fil) => fil,
             Err(e) => {
@@ -148,8 +170,6 @@ fn run() -> i32 {
             Some(name) => name,
             None => log_file_name
         };
-        eprintln!("Generating power data for {} ({}/{})",
-            log_file_name_only, ctr+1, log_file_count);
 
         let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(ParsedCPUState, ParsedCPUStateDelta)>(CHANNEL_SIZE);
     
@@ -289,23 +309,29 @@ fn run() -> i32 {
                 let line = match line_result {
                     Ok(ref s) => s,
                     Err(e) => {
-                        eprintln!("Error reading file: {}", e);
+                        eprintln!("Error reading file {}: {}", log_file_name, e);
                         exit_code.store(1, Ordering::Release);
                         break;
                     }
                 };
                 // When not capturing yet, use simpler regex to grab pc
                 if !track_state {
+                    if parse_spinner.position() != 1 {
+                        parse_spinner.set_message("Waiting for start pc");
+                        parse_spinner.set_position(1);
+                    }
                     match get_pc(line) {
                         Ok(pc) => {
                             if pc == pc_range.unwrap().start {
-                                eprintln!("Starting data capture");
+                                parse_spinner.set_message("Computing power");
+                                parse_spinner.set_position(2);
                                 track_state = true;
                                 sent_anything = true;
                             }
                         },
                         Err(e) => {
-                            eprintln!("Error with line {} {}: {}", line_no+1, line, e);
+                            eprintln!("Error parsing file {} line {} {}: {}",
+                                log_file_name, line_no+1, line, e);
                             exit_code.store(1, Ordering::Release);
                             break;
                         }
@@ -317,38 +343,41 @@ fn run() -> i32 {
                             if let Some(range) = pc_range {
                                 if state.pc() == range.stop {
                                     track_state = false;
-                                    eprintln!("Stopping data capture");
+                                    parse_spinner.set_message("Finishing");
+                                    parse_spinner.set_position(3);
                                     break;
                                 }
                             }
                             tx_parsed.send((state, delta)).unwrap();
                         },
                         Err(e) => {
-                            eprintln!("Error with line {} {}: {}", line_no+1, line, e);
+                            eprintln!("Error parsing file {} line {} {}: {}",
+                                log_file_name, line_no+1, line, e);
                             exit_code.store(1, Ordering::Release);
                             break;
                         }
                     }
                 }
-                //eprintln!("Line {}", line_ctr);
             }
-            println!("Done sending lines");
             drop(tx_parsed);
             if !sent_anything {
-                eprintln!("Warning: start pc was never hit")
+                eprintln!("Warning: start pc of file {} was never hit", log_file_name);
             }
             if pc_range.is_some() && track_state {
-                eprintln!("Warning: end pc was never hit")
+                eprintln!("Warning: end pc of file {} was never hit", log_file_name);
             }
         }).unwrap();
 
+        out_file.flush().unwrap();
         let exit_code_val = exit_code.load(Ordering::Acquire);
         if exit_code_val != 0 {
-            return 1;
+            real_exit_code = exit_code_val;
+            break;
         }
-        println!("Done processing file");
-        out_file.flush().unwrap();
     }
 
-    0
+    parse_spinner.finish_and_clear();
+    pb_thread_handle.join().unwrap();
+
+    real_exit_code
 }
