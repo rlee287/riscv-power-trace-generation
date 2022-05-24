@@ -169,6 +169,7 @@ impl CPUState {
                 if let Some((_reg, val)) = delta.x_register {
                     self.membus_read = val;
                 }
+                self.membus_strobe = 0x00;
             }
             Some(MemoryOperation::MemoryStore { addr, value }) => {
                 self.membus_addr = addr;
