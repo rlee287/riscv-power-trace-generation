@@ -39,7 +39,7 @@ fn main() {
 fn run() -> i32 {
     let cmd_parser = Command::new("RISCV power trace generator")
         .arg(Arg::new("config_file").takes_value(true).required(true)
-            .long("config-file"))
+            .long("config-file").short('c'))
         .arg(Arg::new("output_file").takes_value(true).required(true)
             .long("output-file").short('o'))
         .arg(Arg::new("log_files").takes_value(true).required(true)
