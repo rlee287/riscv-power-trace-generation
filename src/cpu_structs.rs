@@ -388,6 +388,7 @@ pub enum CPUStateStrParseErr {
     InvalidPrivilege(u8),
     InvalidRegister(u8),
     InvalidStoreWidth(usize),
+    UnexpectedOperation(&'static str),
     RegexFail
 }
 impl fmt::Display for CPUStateStrParseErr {
@@ -396,6 +397,7 @@ impl fmt::Display for CPUStateStrParseErr {
             Self::InvalidPrivilege(r#priv) => write!(f, "Invalid privilege {} ", r#priv),
             Self::InvalidRegister(reg) => write!(f, "Invalid register {}", reg),
             Self::InvalidStoreWidth(width) => write!(f, "Invalid store width {}", width),
+            Self::UnexpectedOperation(str) => write!(f, "Unexpected operation {}", str),
             Self::RegexFail => f.write_str("Regex did not match")
         }
     }
@@ -410,11 +412,10 @@ impl FromStr for ParsedCPUStateDelta {
         let mem_captures: Vec<_> = MEM_CHANGE.captures_iter(s).collect();
 
         if csr_captures.len()>2 {
-            // TODO: better error, if this actually gets hit
-            return Err(CPUStateStrParseErr::RegexFail);
+            return Err(CPUStateStrParseErr::UnexpectedOperation("More than 2 CSR operations"));
         }
         if mem_captures.len()>2 {
-            return Err(CPUStateStrParseErr::RegexFail);
+            return Err(CPUStateStrParseErr::UnexpectedOperation("More than 2 memory operations"));
         }
         /*
          * Possible state transitions
@@ -488,7 +489,10 @@ impl FromStr for ParsedCPUStateDelta {
                     Ok(MemoryOperation::MemoryStore { addr, value }) => {
                         if ret_delta.memory_op.is_some() {
                             // Illegal state of 2 stores
-                            return Err(CPUStateStrParseErr::RegexFail);
+                            return Err(CPUStateStrParseErr::UnexpectedOperation("CPU attempted two stores"));
+                        }
+                        if load_addr.unwrap() != *addr {
+                            return Err(CPUStateStrParseErr::UnexpectedOperation("CPU load and store at different addrs"));
                         }
                         ret_delta.memory_op = Some(
                             MemoryOperation::MemoryLoadStore{
@@ -499,7 +503,7 @@ impl FromStr for ParsedCPUStateDelta {
                     Ok(MemoryOperation::MemoryLoad { addr }) => {
                         if load_addr.is_some() {
                             // Illegal state of 2 loads
-                            return Err(CPUStateStrParseErr::RegexFail);
+                            return Err(CPUStateStrParseErr::UnexpectedOperation("CPU attempted two loads"));
                         }
                         load_addr = Some(*addr)
                     }
@@ -508,11 +512,11 @@ impl FromStr for ParsedCPUStateDelta {
                     }
                 }
                 if load_addr.is_none() {
-                    return Err(CPUStateStrParseErr::RegexFail);
+                    unreachable!("2 Mem stores not caught earlier");
                 }
             },
             _ => {
-                return Err(CPUStateStrParseErr::RegexFail);
+                unreachable!("More than 2 memory operations not caught earlier");
             }
         }
         Ok(ret_delta)
