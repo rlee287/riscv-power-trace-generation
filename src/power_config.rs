@@ -36,6 +36,8 @@ pub struct Config {
 #[derive(Serialize, Deserialize)]
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct CPUPowerSettings {
+    #[serde(default)]
+    pub jitter_amount: f64,
     pub r#priv: PowerSettings,
     pub pc: PowerSettings,
     pub instr: PowerSettings,

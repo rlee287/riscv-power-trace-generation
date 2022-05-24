@@ -14,6 +14,7 @@ use cpu_structs::{parse_commit_line, get_pc};
 
 use power_config::Config;
 use power_config::PCFilter;
+use rand_distr::{Distribution, Normal};
 
 use range_union_find::IntRangeUnionFind;
 use std::ops::Bound;
@@ -122,7 +123,6 @@ fn run() -> i32 {
     }).collect::<Vec<_>>();
 
     let power_config = config.power_settings;
-    let power_config_str = serde_json::to_string(&power_config).unwrap();
 
     let output_file_name = cmd_args.value_of("output_file").unwrap();
     let out_file = match hdf5::File::create(output_file_name) {
@@ -132,6 +132,8 @@ fn run() -> i32 {
             return 1;
         }
     };
+
+    let mut rand_gen = rand::thread_rng();
 
     let log_file_names: Vec<_> = cmd_args.values_of("log_files").unwrap().collect();
     let log_file_count = log_file_names.len();
@@ -157,6 +159,48 @@ fn run() -> i32 {
         let (tx_state, rx_state) = crossbeam_channel::bounded(CHANNEL_SIZE);
 
         let group = out_file.create_group(log_file_name_only).unwrap();
+
+        // Shadow the external one
+        let real_power_config = {
+            if power_config.jitter_amount == 0.0 {
+                power_config.clone()
+            } else {
+                let mut new_power_config = power_config.clone();
+                // TODO: change this
+                let distr = Normal::new(1.0, power_config.jitter_amount).unwrap();
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.r#priv.weight_multiplier *= multiplier;
+                new_power_config.r#priv.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.pc.weight_multiplier *= multiplier;
+                new_power_config.pc.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.instr.weight_multiplier *= multiplier;
+                new_power_config.instr.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.xregs.weight_multiplier *= multiplier;
+                new_power_config.xregs.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.membus.weight_multiplier *= multiplier;
+                new_power_config.membus.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.memory.weight_multiplier *= multiplier;
+                new_power_config.memory.delta_multiplier *= multiplier;
+
+                let multiplier = distr.sample(&mut rand_gen);
+                new_power_config.csr.weight_multiplier *= multiplier;
+                new_power_config.csr.delta_multiplier *= multiplier;
+
+                new_power_config
+            }
+        };
+        let power_config_str = serde_json::to_string(&real_power_config).unwrap();
 
         let pow_attr = group.new_attr::<hdf5::types::VarLenUnicode>()
             .create("power_config").unwrap();
@@ -268,7 +312,7 @@ fn run() -> i32 {
                 //println!("Power thread start");
                 let mut prev_state = Arc::new(CPUState::default());
                 let pow_iter = rx_state.into_iter().map(|state| {
-                    let power = state.compute_power(Some(&prev_state), &power_config);
+                    let power = state.compute_power(Some(&prev_state), &real_power_config);
                     prev_state = state;
                     power
                 });

@@ -8,6 +8,8 @@ default = []
 mem_track = []
 
 [dependencies]
+rand = "0.8"
+rand_distr = "0.4.3"
 static_assertions = "1.1"
 lazy_static = "1.4"
 crossbeam-utils = "0.8"
