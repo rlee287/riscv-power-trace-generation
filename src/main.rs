@@ -3,14 +3,16 @@ use std::io::{Read, BufRead, BufReader};
 
 use clap::{Arg, Command};
 
-mod cpu_structs;
+mod cpu;
 mod power_config;
 mod arithmetic_utils;
 mod hdf5_helper;
-mod memory;
+//mod memory;
 
-use cpu_structs::{ParsedCPUState, CPUState, ParsedCPUStateDelta};
-use cpu_structs::{parse_commit_line, get_pc};
+use cpu::parsing::{ParsedCPUState, ParsedCPUStateDelta};
+use cpu::parsing::{parse_commit_line, get_pc};
+
+use cpu::cpu_structs::CPUState;
 
 use power_config::Config;
 use power_config::PCFilter;
