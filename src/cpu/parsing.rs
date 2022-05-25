@@ -149,6 +149,7 @@ pub struct ParsedCPUStateDelta {
 pub enum CPUStateStrParseErr {
     InvalidPrivilege(u8),
     InvalidRegister(u8),
+    InvalidCsr(u16),
     InvalidStoreWidth(usize),
     UnexpectedOperation(&'static str),
     RegexFail
@@ -158,6 +159,7 @@ impl fmt::Display for CPUStateStrParseErr {
         match self {
             Self::InvalidPrivilege(r#priv) => write!(f, "Invalid privilege {} ", r#priv),
             Self::InvalidRegister(reg) => write!(f, "Invalid register {}", reg),
+            Self::InvalidCsr(csr) => write!(f, "Invalid csr {}", csr),
             Self::InvalidStoreWidth(width) => write!(f, "Invalid store width {}", width),
             Self::UnexpectedOperation(str) => write!(f, "Unexpected operation {}", str),
             Self::RegexFail => f.write_str("Regex did not match")
@@ -196,6 +198,9 @@ impl FromStr for ParsedCPUStateDelta {
         }
         for (i,csr_capture) in csr_captures.into_iter().enumerate() {
             let csr_addr = u16::from_str(&csr_capture[1]).map_err(|_| CPUStateStrParseErr::RegexFail)?;
+            if !(0..4096).contains(&csr_addr) {
+                return Err(CPUStateStrParseErr::InvalidCsr(csr_addr));
+            }
             let csr_val = u64::from_str_radix(&csr_capture[2], 16).map_err(|_| CPUStateStrParseErr::RegexFail)?;
             ret_delta.csr_registers[i] = Some((csr_addr, csr_val));
         }
