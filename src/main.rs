@@ -12,7 +12,7 @@ mod hdf5_helper;
 use cpu::parsing::{ParsedCPUState, ParsedCPUStateDelta};
 use cpu::parsing::{parse_commit_line, get_pc};
 
-use cpu::cpu_structs::CPUState;
+use cpu::cpu_structs::{CPUState, CPUStateDelta};
 
 use power_config::Config;
 use power_config::PCFilter;
@@ -215,15 +215,22 @@ fn run() -> i32 {
                 let mut prev_cpu_state = Arc::new(CPUState::default());
                 for (recv_state, delta) in rx_parsed {
                     let mut new_state = recv_state.apply_persistent_state(&prev_cpu_state);
+
+                    let mut xor_delta = CPUStateDelta::new();
+                    xor_delta.set_delta_xor(&prev_cpu_state, &delta);
+
                     new_state.apply(delta);
+
+                    xor_delta.set_old_state_xor(&prev_cpu_state, &new_state);
+
+                    let pc_val = new_state.pc();
                     let recv_state_arc = Arc::new(new_state);
-                    let pc_val = recv_state_arc.pc();
                     tx_pc.send(pc_val).unwrap();
                     if let Some(ref tx_pc_2) = tx_pc_2 {
                         tx_pc_2.send(pc_val).unwrap()
                     }
                     // Stream over states to another thread for power calc
-                    tx_state.send(recv_state_arc.clone()).unwrap();
+                    tx_state.send((recv_state_arc.clone(), xor_delta)).unwrap();
                     prev_cpu_state = recv_state_arc;
                 }
                 //println!("Done computing CPU state");
@@ -288,11 +295,8 @@ fn run() -> i32 {
             // Power computation thread
             s.spawn(|_| {
                 //println!("Power thread start");
-                let mut prev_state = Arc::new(CPUState::default());
-                let pow_iter = rx_state.into_iter().map(|state| {
-                    let power = state.compute_power(Some(&prev_state), &power_config);
-                    prev_state = state;
-                    power
+                let pow_iter = rx_state.into_iter().map(|(state, delta)| {
+                    state.compute_power(&power_config) + delta.compute_power(&power_config)
                 });
                 let pow_dataset = group.new_dataset::<f64>()
                     .deflate(COMPRESSION_AMOUNT)
