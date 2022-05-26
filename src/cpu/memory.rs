@@ -92,3 +92,63 @@ impl Default for StoreVal {
         Self::U64(0)
     }
 }
+
+#[cfg(feature = "mem_track")]
+const PAGE_SIZE: usize = 2_usize.pow(12);
+#[cfg(feature = "mem_track")]
+#[derive(Debug, Default, Clone)]
+pub struct MemoryState {
+    mem_state: BTreeMap<u64, [u8; PAGE_SIZE]>
+}
+#[cfg(feature = "mem_track")]
+impl MemoryState {
+    pub fn new() -> MemoryState {
+        Self::default()
+    }
+    pub fn hamming_weight(&self) -> u64 {
+        let mem_bytes = self.mem_state.values();
+        let hamming_weight: u64 = mem_bytes.flatten().map(|x| *x as u64).sum();
+        hamming_weight
+    }
+    pub fn mem_contents(&self) -> &BTreeMap<u64, [u8; PAGE_SIZE]> {
+        &self.mem_state
+    }
+    pub fn write_store(&mut self, address: u64, store: &mut StoreVal) {
+        let page_offset = address % (PAGE_SIZE as u64);
+        let page_addr = address - page_offset;
+        assert_eq!(page_addr % (PAGE_SIZE as u64), 0);
+        #[cfg(debug_assertions)]
+        {
+            let upper_addr = address + (store.byte_len() as u64) - 1;
+            let upper_page_offset = upper_addr % (PAGE_SIZE as u64);
+            if upper_page_offset <= page_offset {
+                panic!("Unaligned write at 0x{:x} of len {} crossed a page boundary", address, store.byte_len());
+            }
+        }
+        let mut byte_arr: [u8; 8] = [0x00; 8];
+
+        match store {
+            StoreVal::U8(val) => byte_arr[..1].copy_from_slice(&val.to_le_bytes()),
+            StoreVal::U16(val) => byte_arr[..2].copy_from_slice(&val.to_le_bytes()),
+            StoreVal::U32(val) => byte_arr[..4].copy_from_slice(&val.to_le_bytes()),
+            StoreVal::U64(val) => byte_arr.copy_from_slice(&val.to_le_bytes())
+        };
+        let page_entry = self.mem_state.entry(page_addr);
+        let page = page_entry.or_insert([0x00; PAGE_SIZE]);
+        for (rel_addr, byte) in byte_arr[..store.byte_len()].iter().enumerate() {
+            let byte_addr = page_offset.wrapping_add(rel_addr.try_into().unwrap());
+            page[byte_addr as usize] = *byte;
+        }
+    }
+    pub fn gc_page_map(&mut self) {
+        self.mem_state.retain(|_k, v| {
+            debug_assert!(*_k % (PAGE_SIZE as u64) == 0);
+            for byte in v {
+                if *byte != 0 {
+                    return true;
+                }
+            }
+            return false;
+        })
+    }
+}
