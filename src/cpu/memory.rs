@@ -12,6 +12,16 @@ pub enum StoreVal {
     U32(u32),
     U64(u64)
 }
+impl StoreVal {
+    pub fn get_strobe(store: &Self, addr: u64) -> u8{
+        match store {
+            StoreVal::U8(_)  => 0x01 << (addr % 8),
+            StoreVal::U16(_) => 0x03 << (addr % 8),
+            StoreVal::U32(_) => 0x0f << (addr % 8),
+            StoreVal::U64(_) => 0xff
+        }
+    }
+}
 #[cfg(feature = "mem_track")]
 impl StoreVal {
     pub fn byte_len(&self) -> usize {

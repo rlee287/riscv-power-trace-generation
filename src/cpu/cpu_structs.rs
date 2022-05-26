@@ -148,12 +148,7 @@ impl CPUState {
                 self.write_store(addr, value);
 
                 self.membus_write = value.into();
-                self.membus_strobe = match value {
-                    StoreVal::U8(_)  => 0x01 << (addr % 8),
-                    StoreVal::U16(_) => 0x03 << (addr % 8),
-                    StoreVal::U32(_) => 0x0f << (addr % 8),
-                    StoreVal::U64(_) => 0xff
-                }
+                self.membus_strobe = StoreVal::get_strobe(&value, addr);
             },
             Some(MemoryOperation::MemoryLoadStore { addr , value}) => {
                 self.membus_addr = addr;
@@ -162,15 +157,10 @@ impl CPUState {
 
                 self.membus_read = value.into();
                 self.membus_write = value.into();
-                self.membus_strobe = match value {
-                    StoreVal::U8(_)  => 0x01 << (addr % 8),
-                    StoreVal::U16(_) => 0x03 << (addr % 8),
-                    StoreVal::U32(_) => 0x0f << (addr % 8),
-                    StoreVal::U64(_) => 0xff
-                }
+                self.membus_strobe = StoreVal::get_strobe(&value, addr);
             },
             None => {}
-        }
+        };
     }
     pub fn compute_power(&self, other: Option<&Self>, power: &CPUPowerSettings) -> f64 {
         let priv_power = power.r#priv.weight_multiplier *
