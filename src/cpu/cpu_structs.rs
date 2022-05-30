@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-#[cfg(feature = "mem_track")]
-use std::collections::{BTreeSet, BTreeMap};
 
 use crate::power_config::CPUPowerSettings;
 use crate::arithmetic_utils;
@@ -10,7 +8,7 @@ use crate::cpu::memory::MemoryState;
 
 use crate::ParsedCPUStateDelta;
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone)]
 pub struct CPUState {
     pub(super) privilege_state: u8,
     pub(super) pc: u64,
@@ -37,23 +35,8 @@ impl CPUState {
         self.pc
     }
     #[cfg(feature = "mem_track")]
-    fn write_store(&mut self, addr: u64, store: StoreVal) {
-        let mut byte_arr: [u8; 8] = [0x00; 8];
-
-        match store {
-            StoreVal::U8(val) => byte_arr[..1].copy_from_slice(&val.to_le_bytes()),
-            StoreVal::U16(val) => byte_arr[..2].copy_from_slice(&val.to_le_bytes()),
-            StoreVal::U32(val) => byte_arr[..4].copy_from_slice(&val.to_le_bytes()),
-            StoreVal::U64(val) => byte_arr.copy_from_slice(&val.to_le_bytes())
-        };
-        for (rel_addr, byte) in byte_arr[..store.byte_len()].iter().enumerate() {
-            let abs_addr = addr.wrapping_add(rel_addr.try_into().unwrap());
-            if *byte == 0 {
-                self.memory.remove(&abs_addr);
-            } else {
-                self.memory.insert(abs_addr, *byte);
-            }
-        }
+    fn write_store(&mut self, addr: u64, store: &StoreVal) {
+        self.memory.write_store(addr, store);
     }
     pub fn apply(&mut self, delta: ParsedCPUStateDelta) {
         if let Some((reg, val)) = delta.x_register {
@@ -81,7 +64,7 @@ impl CPUState {
             Some(MemoryOperation::MemoryStore { addr, value }) => {
                 self.membus_addr = addr;
                 #[cfg(feature = "mem_track")]
-                self.write_store(addr, value);
+                self.write_store(addr, &value);
 
                 self.membus_write = value.into();
                 self.membus_strobe = StoreVal::get_strobe(&value, addr);
@@ -89,9 +72,16 @@ impl CPUState {
             Some(MemoryOperation::MemoryLoadStore { addr , value}) => {
                 self.membus_addr = addr;
                 #[cfg(feature = "mem_track")]
-                self.write_store(addr, value);
-
-                self.membus_read = value.into();
+                {
+                    let addr_aligned = 8*(addr/8);
+                    let old_mem_content = self.memory.read_u64(addr_aligned);
+                    self.membus_read = old_mem_content;
+                    self.write_store(addr, &value);
+                }
+                #[cfg(not(feature = "mem_track"))]
+                {
+                    self.membus_read = value.into();
+                }
                 self.membus_write = value.into();
                 self.membus_strobe = StoreVal::get_strobe(&value, addr);
             },
@@ -117,9 +107,8 @@ impl CPUState {
         let membus_strobe_power = power.membus.weight_multiplier *
             f64::from(self.membus_strobe.count_ones());
         #[cfg(feature = "mem_track")]
-        let memory_power = self.memory.values().map(|byte| {
-            power.memory.weight_multiplier * f64::from(byte.count_ones())
-        });
+        // We don't really care about reduced precision if we hit absurd memory power
+        let memory_power = [power.memory.weight_multiplier * self.memory.hamming_weight() as f64];
         #[cfg(not(feature = "mem_track"))]
         let memory_power = [0.0];
         let csr_power = self.csr.values().map(|csr_reg| {
@@ -147,7 +136,7 @@ pub enum MemoryOperation {
         addr: u64,
         value: StoreVal
     },
-    // XXX: for atomic instructions, load and store value may differ, but we don't track this
+    // XXX: for atomic instructions, load and store value may differ, but we only track this with mem_track
     MemoryLoadStore {
         addr: u64,
         value: StoreVal
@@ -168,6 +157,8 @@ pub struct CPUStateDelta {
     membus_read_xor: u64,
     membus_write_xor: u64,
     membus_strobe_xor: u8,
+    #[cfg(feature = "mem_track")]
+    memory_xor: u64,
     csr_xor: [u64; 2]
     // When mem_track on, infer memory xor from memory bus and old mem
 }
@@ -185,6 +176,9 @@ impl CPUStateDelta {
             membus_read_xor: 0,
             membus_write_xor: 0,
             membus_strobe_xor: 0,
+            #[cfg(feature = "mem_track")]
+            memory_xor: 0,
+
             csr_xor: [0; 2]
         }
     }
@@ -217,18 +211,38 @@ impl CPUStateDelta {
             }
             Some(MemoryOperation::MemoryStore { addr, value }) => {
                 self.membus_addr_xor = old_state.membus_addr ^ addr;
-                // TODO: replace
                 #[cfg(feature = "mem_track")]
-                self.write_store(addr, value);
+                {
+                    let addr_aligned = 8*(addr/8);
+                    let old_mem_content = old_state.memory.read_u64(addr_aligned);
+                    let new_mem_content = value.expand_to_u64();
+                    let strobe_mask: u64 = match value {
+                        StoreVal::U8(_)  => 0x00_00_00_00_00_00_00_ff << 8*(addr % 8),
+                        StoreVal::U16(_) => 0x00_00_00_00_00_00_ff_ff << 8*(addr % 8),
+                        StoreVal::U32(_) => 0x00_00_00_00_ff_ff_ff_ff << 8*(addr % 8),
+                        StoreVal::U64(_) => 0xff_ff_ff_ff_ff_ff_ff_ff
+                    };
+                    self.memory_xor = (old_mem_content ^ new_mem_content) & strobe_mask
+                }
 
                 self.membus_write_xor = old_state.membus_write ^ u64::from(value);
                 self.membus_strobe_xor = old_state.membus_strobe ^ StoreVal::get_strobe(&value, addr);
             },
             Some(MemoryOperation::MemoryLoadStore { addr , value}) => {
                 self.membus_addr_xor = old_state.membus_addr ^ addr;
-                // TODO: replace
                 #[cfg(feature = "mem_track")]
-                self.write_store(addr, value);
+                {
+                    let addr_aligned = 8*(addr/8);
+                    let old_mem_content = old_state.memory.read_u64(addr_aligned);
+                    let new_mem_content = value.expand_to_u64();
+                    let strobe_mask: u64 = match value {
+                        StoreVal::U8(_)  => 0x00_00_00_00_00_00_00_ff << 8*(addr % 8),
+                        StoreVal::U16(_) => 0x00_00_00_00_00_00_ff_ff << 8*(addr % 8),
+                        StoreVal::U32(_) => 0x00_00_00_00_ff_ff_ff_ff << 8*(addr % 8),
+                        StoreVal::U64(_) => 0xff_ff_ff_ff_ff_ff_ff_ff
+                    };
+                    self.memory_xor = (old_mem_content ^ new_mem_content) & strobe_mask;
+                }
 
                 self.membus_read_xor = old_state.membus_read ^ u64::from(value);
                 self.membus_write_xor = old_state.membus_write ^ u64::from(value);
@@ -260,9 +274,7 @@ impl CPUStateDelta {
             f64::from(self.membus_strobe_xor.count_ones());
         // TODO: replace
         #[cfg(feature = "mem_track")]
-        let memory_power = delta_state.memory.values().map(|byte| {
-            power.memory.delta_multiplier * f64::from(byte.count_ones())
-        });
+        let memory_power = [power.memory.delta_multiplier * f64::from(self.memory_xor.count_ones())];
         #[cfg(not(feature = "mem_track"))]
         let memory_power = [0.0];
         let csr_power = self.csr_xor.map(|csr_reg| {
