@@ -107,7 +107,7 @@ impl MemoryState {
     }
     pub fn hamming_weight(&self) -> u64 {
         let mem_bytes = self.mem_state.values();
-        let hamming_weight: u64 = mem_bytes.flatten().map(|x| *x as u64).sum();
+        let hamming_weight: u64 = mem_bytes.flatten().map(|x| u64::from(x.count_ones())).sum();
         hamming_weight
     }
     pub fn mem_contents(&self) -> &BTreeMap<u64, [u8; PAGE_SIZE]> {
