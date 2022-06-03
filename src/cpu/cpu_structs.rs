@@ -30,10 +30,6 @@ pub struct CPUState {
 }
 
 impl CPUState {
-    #[inline(always)]
-    pub fn pc(&self) -> u64 {
-        self.pc
-    }
     #[cfg(feature = "mem_track")]
     fn write_store(&mut self, addr: u64, store: &StoreVal) {
         self.memory.write_store(addr, store);
