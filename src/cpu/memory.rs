@@ -113,6 +113,7 @@ const PAGE_SIZE: usize = 2_usize.pow(12);
 pub struct MemoryState {
     mem_state: BTreeMap<u64, [u8; PAGE_SIZE]>
 }
+#[cfg(feature = "mem_track")]
 impl Clone for MemoryState {
     fn clone(&self) -> Self {
         let gc_mem_state: BTreeMap<_, _> = self.mem_state.iter()
