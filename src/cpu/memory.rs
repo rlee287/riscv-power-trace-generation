@@ -111,7 +111,8 @@ const PAGE_SIZE: usize = 2_usize.pow(12);
 #[cfg(feature = "mem_track")]
 #[derive(Debug, Default)]
 pub struct MemoryState {
-    mem_state: BTreeMap<u64, [u8; PAGE_SIZE]>
+    mem_state: BTreeMap<u64, [u8; PAGE_SIZE]>,
+    hamming_weight: u64
 }
 #[cfg(feature = "mem_track")]
 impl Clone for MemoryState {
@@ -127,7 +128,7 @@ impl Clone for MemoryState {
                 return None;
             })
             .collect();
-        Self { mem_state: gc_mem_state }
+        Self { mem_state: gc_mem_state, hamming_weight: self.hamming_weight }
     }
 }
 #[cfg(feature = "mem_track")]
@@ -136,6 +137,10 @@ impl MemoryState {
         Self::default()
     }
     pub fn hamming_weight(&self) -> u64 {
+        debug_assert_eq!(self.hamming_weight, self.hamming_weight_naive());
+        self.hamming_weight
+    }
+    pub fn hamming_weight_naive(&self) -> u64 {
         let mem_bytes = self.mem_state.values();
         let hamming_weight: u64 = mem_bytes.flatten().map(|x| u64::from(x.count_ones())).sum();
         hamming_weight
@@ -184,10 +189,16 @@ impl MemoryState {
         };
         let page_entry = self.mem_state.entry(page_addr);
         let page = page_entry.or_insert([0x00; PAGE_SIZE]);
+        let mut hamming_weight_old = 0;
+        let mut hamming_weight_new = 0;
         for (rel_addr, byte) in byte_arr[..store.byte_len()].iter().enumerate() {
             let byte_addr = page_offset.wrapping_add(rel_addr.try_into().unwrap());
-            page[byte_addr as usize] = *byte;
+            hamming_weight_old += page[byte_addr].count_ones();
+            hamming_weight_new += byte.count_ones();
+            page[byte_addr] = *byte;
         }
+        self.hamming_weight -= u64::from(hamming_weight_old);
+        self.hamming_weight += u64::from(hamming_weight_new);
     }
     pub fn gc_page_map(&mut self) -> usize {
         let old_state_count = self.mem_state.len();
