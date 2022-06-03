@@ -176,6 +176,14 @@ fn run() -> i32 {
         let (tx_parsed, rx_parsed) = crossbeam_channel::bounded::<(ParsedCPUState, ParsedCPUStateDelta)>(CHANNEL_SIZE);
     
         let (tx_pc, rx_pc) = crossbeam_channel::bounded(CHANNEL_SIZE);
+        let (tx_pc_2, rx_pc_2) = match label_indexes.len() {
+            0 => (None, None),
+            _ => {
+                let (tx_2, rx_2) = crossbeam_channel::bounded(CHANNEL_SIZE);
+                (Some(tx_2), Some(rx_2))
+            }
+        };
+
         let (tx_state, rx_state) = crossbeam_channel::bounded(CHANNEL_SIZE);
 
         let group = out_file.create_group(log_file_name_only).unwrap();
@@ -202,13 +210,6 @@ fn run() -> i32 {
 
         let exit_code = AtomicI32::new(0);
         scope(|s| {
-            let (tx_pc_2, rx_pc_2) = match label_indexes.len() {
-                0 => (None, None),
-                _ => {
-                    let (tx_2, rx_2) = crossbeam_channel::bounded(CHANNEL_SIZE);
-                    (Some(tx_2), Some(rx_2))
-                }
-            };
             // CPU state thread
             s.spawn(|_| {
                 //println!("CPU thread start");
@@ -223,20 +224,12 @@ fn run() -> i32 {
 
                     xor_delta.set_old_state_xor(&prev_cpu_state, &new_state);
 
-                    let pc_val = new_state.pc();
                     let recv_state_arc = Arc::new(new_state);
-                    tx_pc.send(pc_val).unwrap();
-                    if let Some(ref tx_pc_2) = tx_pc_2 {
-                        tx_pc_2.send(pc_val).unwrap()
-                    }
                     // Stream over states to another thread for power calc
                     tx_state.send((recv_state_arc.clone(), xor_delta)).unwrap();
                     prev_cpu_state = recv_state_arc;
                 }
                 //println!("Done computing CPU state");
-                drop(tx_pc);
-                // Dropping an Option::None is a no-op
-                drop(tx_pc_2);
                 drop(tx_state);
             });
             // Write pc vals to file
@@ -354,6 +347,10 @@ fn run() -> i32 {
                                     break;
                                 }
                             }
+                            tx_pc.send(state.pc()).unwrap();();
+                            if let Some(ref tx_pc_2) = tx_pc_2 {
+                                tx_pc_2.send(state.pc()).unwrap();
+                            }
                             tx_parsed.send((state, delta)).unwrap();
                         },
                         Err(e) => {
@@ -366,6 +363,9 @@ fn run() -> i32 {
                 }
             }
             drop(tx_parsed);
+            drop(tx_pc);
+            // Dropping an Option::None is a no-op
+            drop(tx_pc_2);
             if !sent_anything {
                 eprintln!("Warning: start pc of file {} was never hit", log_file_name);
             }
