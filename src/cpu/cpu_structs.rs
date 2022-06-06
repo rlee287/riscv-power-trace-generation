@@ -104,18 +104,17 @@ impl CPUState {
             f64::from(self.membus_strobe.count_ones());
         #[cfg(feature = "mem_track")]
         // We don't really care about reduced precision if we hit absurd memory power
-        let memory_power = [power.memory.weight_multiplier * self.memory.hamming_weight() as f64];
+        let memory_power = power.memory.weight_multiplier * self.memory.hamming_weight() as f64;
         #[cfg(not(feature = "mem_track"))]
         let memory_power = [0.0];
         let csr_power = self.csr.values().map(|csr_reg| {
             power.csr.weight_multiplier * f64::from(csr_reg.count_ones())
         });
-        let weight_iter = [priv_power].into_iter()
-            .chain([pc_power, instr_power])
-            .chain([membus_addr_power, membus_read_power])
-            .chain([membus_write_power, membus_strobe_power])
+        let weight_iter = [priv_power, pc_power, instr_power,
+            membus_addr_power, membus_read_power,
+            membus_write_power, membus_strobe_power,
+            memory_power].into_iter()
             .chain(xregs_power)
-            .chain(memory_power)
             .chain(csr_power);
 
         arithmetic_utils::sum(weight_iter)
@@ -270,19 +269,18 @@ impl CPUStateDelta {
             f64::from(self.membus_strobe_xor.count_ones());
         // TODO: replace
         #[cfg(feature = "mem_track")]
-        let memory_power = [power.memory.delta_multiplier * f64::from(self.memory_xor.count_ones())];
+        let memory_power = power.memory.delta_multiplier * f64::from(self.memory_xor.count_ones());
         #[cfg(not(feature = "mem_track"))]
-        let memory_power = [0.0];
+        let memory_power = 0.0;
         let csr_power = self.csr_xor.map(|csr_reg| {
             power.csr.delta_multiplier * f64::from(csr_reg.count_ones())
         });
-        let delta_iter = [priv_power].into_iter()
-            .chain([pc_power, instr_power])
-            .chain([membus_addr_power, membus_read_power])
-            .chain([membus_write_power, membus_strobe_power])
-            .chain([xreg_power])
-            .chain(memory_power)
-            .chain(csr_power);
+        let delta_iter = [priv_power, pc_power, instr_power,
+            membus_addr_power, membus_read_power,
+            membus_write_power, membus_strobe_power,
+            xreg_power,
+            memory_power,
+            csr_power[0], csr_power[1]];
         arithmetic_utils::sum(delta_iter)
     }
 }
