@@ -8,6 +8,45 @@ use crate::cpu::memory::MemoryState;
 
 use crate::ParsedCPUStateDelta;
 
+#[derive(Debug, Default)]
+pub(super) struct CSRState {
+    csr_state: HashMap<u16, u64>,
+    hamming_weight: u64
+}
+impl Clone for CSRState {
+    fn clone(&self) -> Self {
+        let gc_csr_state: HashMap<_, _> = self.csr_state.iter()
+            .filter_map(|(k,v)| {
+                if *v != 0 {
+                    return Some((*k, *v));
+                }
+                return None;
+            })
+            .collect();
+        Self { csr_state: gc_csr_state, hamming_weight: self.hamming_weight }
+    }
+}
+impl CSRState {
+    pub fn hamming_weight(&self) -> u64 {
+        debug_assert_eq!(self.hamming_weight, self.hamming_weight_naive());
+        self.hamming_weight
+    }
+    pub fn hamming_weight_naive(&self) -> u64 {
+        let csr_values = self.csr_state.values();
+        let hamming_weight: u64 = csr_values.map(|x| u64::from(x.count_ones())).sum();
+        hamming_weight
+    }
+    pub fn read(&self, reg: u16) -> u64 {
+        *self.csr_state.get(&reg).unwrap_or(&0)
+    }
+    pub fn write(&mut self, reg: u16, val: u64) {
+        let old_val = self.csr_state.insert(reg, val);
+        let old_weight = old_val.map(|v| v.count_ones()).unwrap_or(0);
+        self.hamming_weight -= u64::from(old_weight);
+        self.hamming_weight += u64::from(val.count_ones());
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct CPUState {
     pub(super) privilege_state: u8,
@@ -26,7 +65,7 @@ pub struct CPUState {
      * CSRs not expected to have similar locality
      * Make CSRs a sparse array
      */
-    pub(super) csr: HashMap<u16, u64>
+    pub(super) csr: CSRState
 }
 
 impl CPUState {
@@ -41,12 +80,12 @@ impl CPUState {
         // Don't need to GC for space as there are at most 4096
         if let Some((reg, val)) = delta.csr_registers[0] {
             if val!=0 {
-                self.csr.insert(reg, val);
+                self.csr.write(reg, val);
             }
         }
         if let Some((reg, val)) = delta.csr_registers[1] {
             if val!=0 {
-                self.csr.insert(reg, val);
+                self.csr.write(reg, val);
             }
         }
         match delta.memory_op {
@@ -106,16 +145,13 @@ impl CPUState {
         // We don't really care about reduced precision if we hit absurd memory power
         let memory_power = power.memory.weight_multiplier * self.memory.hamming_weight() as f64;
         #[cfg(not(feature = "mem_track"))]
-        let memory_power = [0.0];
-        let csr_power = self.csr.values().map(|csr_reg| {
-            power.csr.weight_multiplier * f64::from(csr_reg.count_ones())
-        });
+        let memory_power = 0.0;
+        let csr_power = power.csr.weight_multiplier * self.csr.hamming_weight() as f64;
         let weight_iter = [priv_power, pc_power, instr_power,
             membus_addr_power, membus_read_power,
             membus_write_power, membus_strobe_power,
-            memory_power].into_iter()
-            .chain(xregs_power)
-            .chain(csr_power);
+            memory_power, csr_power].into_iter()
+            .chain(xregs_power);
 
         arithmetic_utils::sum(weight_iter)
     }
@@ -192,7 +228,7 @@ impl CPUStateDelta {
         }
         for (i, csr_change) in state_delta.csr_registers.iter().enumerate() {
             if let Some((csr_id, new_val)) = csr_change {
-                self.csr_xor[i] = old_state.csr.get(csr_id).unwrap_or(&0) ^ new_val;
+                self.csr_xor[i] = old_state.csr.read(*csr_id) ^ new_val;
             }
         }
         // TODO: Modified from CPUState::apply, find way to reduce duplication
